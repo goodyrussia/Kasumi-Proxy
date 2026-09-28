@@ -44,6 +44,12 @@ jobs:
           targets: aarch64-linux-android
           components: rustfmt, clippy
 
+      # rust-toolchain.toml pins the exact Rust version; rustup resolves it inside
+      # the checkout, so the Android target must be added to THAT toolchain — the
+      # one `targets:` above provisioned may not be the one cargo actually uses.
+      - name: Add the Android target to the pinned toolchain
+        run: rustup target add aarch64-linux-android
+
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         with:
