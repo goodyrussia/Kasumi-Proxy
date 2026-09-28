@@ -1,3 +1,9 @@
+## v0.5.1 — 2026-09-28
+
+### Changes
+
+- [`211a910`](https://github.com/goodyrussia/Kasumi-Proxy/commit/211a910) fix(core): build the Android Xray core with CGO
+
 ## v0.5.0 — 2026-09-28
 
 Android-module-only fork release: sing-box, the desktop (Tauri) app, subscriptions and the
