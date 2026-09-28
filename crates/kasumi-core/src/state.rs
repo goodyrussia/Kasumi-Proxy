@@ -38,8 +38,13 @@ pub const fn force_socks_port(socks: u16, http: u16) -> u16 {
 pub const DEFAULT_DELAY_TEST_URL: &str = "https://www.gstatic.com/generate_204";
 pub const DEFAULT_SPEED_TEST_URL: &str = "http://speed.cloudflare.com/__down?bytes=10000000";
 
-// Default upstream resolvers when remoteDns is unset.
-pub const DEFAULT_REMOTE_DNS: [&str; 2] = ["1.1.1.1", "8.8.8.8"];
+// Default upstream resolvers when remoteDns is unset. DNS-over-TCP queried
+// through the proxy — UDP DNS to a public resolver is what carriers drop/hijack,
+// while TCP rides the tunnel fine.
+pub const DEFAULT_REMOTE_DNS: [&str; 1] = ["tcp://1.1.1.1"];
+// Default resolver for direct/off-tunnel lookups (the proxy-server hostname,
+// domains of bypass rules) when domesticDns is unset.
+pub const DEFAULT_DOMESTIC_DNS: [&str; 1] = ["tcp://1.1.1.1"];
 // fake-IP v4 range for the fakeDns feature.
 pub const FAKEIP_INET4_RANGE: &str = "198.18.0.0/15";
 // Default log-rotation cap (KB).

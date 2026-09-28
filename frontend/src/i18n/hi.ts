@@ -306,9 +306,11 @@ const hi = {
   "settings.allowNonLocalhostSub":
     "प्रॉक्सी पोर्ट को 0.0.0.0 से बांधें ताकि नेटवर्क पर अन्य उपकरण कनेक्ट हो सकें",
   "settings.dnsRemote": "रिमोट DNS (प्रॉक्सी के माध्यम से)",
-  "settings.dnsRemotePh": "1.1.1.1, 8.8.8.8",
+  "settings.dnsRemotePh": "tcp://1.1.1.1",
   "settings.dnsDomestic": "घरेलू DNS (सीधा)",
-  "settings.dnsDomesticPh": "223.5.5.5",
+  "settings.dnsDomesticPh": "tcp://1.1.1.1",
+  "settings.dnsRemoteHint": "प्रॉक्सी से भेजा जाता है; tcp:// UDP DNS ब्लॉक में भी चलता है",
+  "settings.dnsDomesticHint": "सीधे/bypass डोमेन + सर्वर होस्ट; localhost = सिस्टम DNS",
   "settings.dnsHosts": "स्थिर hosts",
   "settings.dnsHostsPh": "example.com=1.2.3.4\ndomain.net=5.6.7.8",
   "settings.dnsHostsHint": "प्रति पंक्ति एक host=ip, या raw JSON object",

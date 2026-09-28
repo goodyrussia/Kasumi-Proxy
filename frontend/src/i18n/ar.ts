@@ -347,9 +347,11 @@ const ar = {
   "settings.allowNonLocalhostSub":
     "ربط منافذ الوكيل بـ 0.0.0.0 للسماح للأجهزة الأخرى على الشبكة بالاتصال",
   "settings.dnsRemote": "DNS البعيد (عبر الوكيل)",
-  "settings.dnsRemotePh": "1.1.1.1, 8.8.8.8",
+  "settings.dnsRemotePh": "tcp://1.1.1.1",
   "settings.dnsDomestic": "DNS المحلي (مباشر)",
-  "settings.dnsDomesticPh": "223.5.5.5",
+  "settings.dnsDomesticPh": "tcp://1.1.1.1",
+  "settings.dnsRemoteHint": "تُرسل عبر الوكيل؛ tcp:// يعمل عند حجب UDP DNS",
+  "settings.dnsDomesticHint": "نطاقات مباشرة/مستثناة + عنوان الخادم؛ localhost = DNS النظام",
   "settings.dnsHosts": "Hosts ثابتة",
   "settings.dnsHostsPh": "example.com=1.2.3.4\ndomain.net=5.6.7.8",
   "settings.dnsHostsHint": "مضيف=IP واحد في كل سطر أو كائن JSON خام",

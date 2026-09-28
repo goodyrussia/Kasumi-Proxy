@@ -436,12 +436,15 @@ fn settings_cases() -> Vec<Case> {
         });
     }
 
-    // Fake DNS + dns through proxy + ipv6.
+    // DNS split (Exclave-style): remote over TCP through the proxy + domestic
+    // direct resolvers + ipv6, answering the captured port-53 traffic via
+    // `dns-out` instead of raw forwarding it.
     {
         let s = AdvancedSettings {
             dns_via_proxy: true,
             ipv6_enabled: Some(true),
-            remote_dns: Some("1.1.1.1, 8.8.8.8".into()),
+            remote_dns: Some("tcp://1.1.1.1".into()),
+            domestic_dns: Some("tcp://1.1.1.1".into()),
             ..Default::default()
         };
         cases.push(Case {
@@ -454,11 +457,46 @@ fn settings_cases() -> Vec<Case> {
         });
     }
 
-    // Fake-DNS (xray emits `expectIPs: geoip:!private` → needs geoip.dat staged).
+    // Domestic DNS = system resolver, and remote resolvers dialled direct
+    // (DNS-via-proxy off).
+    {
+        let s = AdvancedSettings {
+            dns_via_proxy: false,
+            domestic_dns: Some("localhost".into()),
+            ..Default::default()
+        };
+        cases.push(Case {
+            name: "settings/dns-localhost-direct".into(),
+            profile: base(),
+            settings: s,
+            rules: vec![],
+            others: vec![],
+            needs_geo: false,
+        });
+    }
+
+    // Rules mode: a direct rule's domains join the domestic DNS ownership.
+    {
+        let s = AdvancedSettings {
+            routing_mode: RoutingMode::Rules,
+            ..Default::default()
+        };
+        let mut bypass = rule("bypass", "direct");
+        bypass.domain = Some(vec!["example.com".into(), "geosite:cn".into()]);
+        cases.push(Case {
+            name: "settings/dns-rules-direct".into(),
+            profile: base(),
+            settings: s,
+            rules: vec![bypass],
+            others: vec![],
+            needs_geo: true,
+        });
+    }
+
+    // Fake-DNS: pool + `fakedns` allocator + sniffer override (no geo dependency).
     {
         let s = AdvancedSettings {
             fake_dns: true,
-            remote_dns: Some("1.1.1.1, 8.8.8.8".into()),
             ..Default::default()
         };
         cases.push(Case {
@@ -467,7 +505,7 @@ fn settings_cases() -> Vec<Case> {
             settings: s,
             rules: vec![],
             others: vec![],
-            needs_geo: true,
+            needs_geo: false,
         });
     }
 

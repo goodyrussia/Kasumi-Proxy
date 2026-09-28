@@ -13,8 +13,8 @@ use crate::enums::{Fingerprint, HeaderType, Security};
 use crate::mixins::Transport;
 use crate::profile::{Profile, WG_DEFAULT_LOCAL_ADDRESS};
 use crate::state::{
-    AdvancedSettings, DEFAULT_LOCAL_HTTP_PORT, DEFAULT_LOCAL_SOCKS_PORT, DEFAULT_REMOTE_DNS,
-    FAKEIP_INET4_RANGE, RoutingRule, force_socks_port,
+    AdvancedSettings, DEFAULT_DOMESTIC_DNS, DEFAULT_LOCAL_HTTP_PORT, DEFAULT_LOCAL_SOCKS_PORT,
+    DEFAULT_REMOTE_DNS, FAKEIP_INET4_RANGE, RoutingRule, force_socks_port,
 };
 
 fn parse_json_safe(s: &str) -> Option<Value> {
@@ -456,6 +456,55 @@ fn build_outbound(p: &Profile, s: &AdvancedSettings) -> Option<Value> {
 
 const SPECIAL_OUTBOUND_TAGS: [&str; 3] = ["proxy", "direct", "block"];
 
+/// DNS server tags that `build_routing` steers by `inboundTag`: queries sent by
+/// the remote-tagged (proxied) resolvers ride the `proxy` outbound, direct-tagged
+/// ones always dial off-tunnel. This is the Exclave-style remote/direct split.
+const DNS_REMOTE_TAG: &str = "dns-remote";
+const DNS_DIRECT_TAG: &str = "dns-direct";
+/// Outbound tag of the DNS-module handler that answers the DNS queries apps send
+/// into the tun (instead of forwarding the raw query packet around).
+const DNS_OUT_TAG: &str = "dns-out";
+
+/// Host part of a DNS server address, usable as a plain dial target: strips the
+/// scheme (`tcp://`, `https://`, …), any `/path`, `+local`-style suffixes and a
+/// trailing `:port`.
+fn dns_host_of(addr: &str) -> Option<String> {
+    let s = addr.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let rest = s.split_once("://").map_or(s, |(_, r)| r);
+    let host_port = rest.split('/').next().unwrap_or("").trim();
+    if host_port.is_empty() {
+        return None;
+    }
+    let host = if let Some(v6) = host_port.strip_prefix('[') {
+        v6.split(']').next().unwrap_or("").to_string()
+    } else {
+        match host_port.rsplit_once(':') {
+            Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => h.to_string(),
+            _ => host_port.to_string(),
+        }
+    };
+    (!host.is_empty()).then_some(host)
+}
+
+/// Register a profile server hostname as a domain the direct DNS owns.
+fn push_direct_domain(out: &mut Vec<String>, addr: &str) {
+    let addr = addr.trim();
+    if addr.is_empty()
+        || addr == "localhost"
+        || addr.parse::<std::net::IpAddr>().is_ok()
+        || addr.contains('/')
+    {
+        return;
+    }
+    let rule = format!("full:{addr}");
+    if !out.contains(&rule) {
+        out.push(rule);
+    }
+}
+
 fn build_rule_object(rule: &RoutingRule, resolve: &dyn Fn(&str) -> String) -> Value {
     let mut m = Map::new();
     m.insert("type".into(), "field".into());
@@ -625,20 +674,49 @@ fn parse_hosts(v: &str) -> Option<Value> {
     }
 }
 
-fn build_dns(s: &AdvancedSettings) -> Value {
+fn build_dns(s: &AdvancedSettings, direct_domains: &[String]) -> Value {
     let remote = split_list(s.remote_dns.as_deref().unwrap_or(""), &DEFAULT_REMOTE_DNS);
-    let mut servers: Vec<Value> = remote.into_iter().map(Value::from).collect();
-    if s.fake_dns {
-        servers.insert(
-            0,
-            json!({ "address": "fakeip", "domains": ["regexp:.+"], "expectIPs": ["geoip:!private"] }),
-        );
-    }
+    let domestic = split_list(
+        s.domestic_dns.as_deref().unwrap_or(""),
+        &DEFAULT_DOMESTIC_DNS,
+    );
     let query_strategy = if s.ipv6_enabled.unwrap_or(false) {
         "UseIP"
     } else {
         "UseIPv4"
     };
+
+    // Domestic (direct) resolvers own the proxy-server hostname + every domain
+    // routed off-tunnel, and `skipFallback` keeps them out of the fallback chain
+    // for everything else. A `localhost` entry additionally claims local/dotless
+    // names for the system resolver.
+    let mut servers: Vec<Value> = domestic
+        .iter()
+        .map(|addr| {
+            let mut entry = json!({
+                "address": addr,
+                "tag": DNS_DIRECT_TAG,
+                "skipFallback": true,
+            });
+            if !direct_domains.is_empty() {
+                entry["domains"] = json!(direct_domains);
+            }
+            entry
+        })
+        .collect();
+    // Fake-DNS allocation for whatever is left; placed after the direct set so
+    // those keep resolving to real IPs.
+    if s.fake_dns {
+        servers.push(json!({ "address": "fakedns", "domains": ["regexp:.+"] }));
+    }
+    // Remote (proxied) resolvers: the general path. Their queries carry the
+    // `dns-remote` tag so routing sends them through the proxy over TCP DNS.
+    servers.extend(
+        remote
+            .iter()
+            .map(|addr| json!({ "address": addr, "tag": DNS_REMOTE_TAG })),
+    );
+
     let mut m = json!({ "servers": servers, "queryStrategy": query_strategy });
     if let Some(hosts) = parse_hosts(s.dns_hosts.as_deref().unwrap_or("")) {
         m["hosts"] = hosts;
@@ -648,19 +726,33 @@ fn build_dns(s: &AdvancedSettings) -> Value {
 
 fn build_routing(
     s: &AdvancedSettings,
-    dns_outbound_tag: &str,
     routing_rules: &[RoutingRule],
     resolve: &dyn Fn(&str) -> String,
 ) -> Value {
     let domain_strategy = wire(&s.domain_strategy);
-    // Bypass-geo rule for the always-on `force-in` inbound — pushed first so traffic
-    // arriving there reaches `proxy` ahead of the geo/user rules.
+    // DNS query routing for the core's own resolvers: direct-tagged servers
+    // always dial off-tunnel, remote-tagged ones ride the proxy (unless the user
+    // turned DNS-via-proxy off). App DNS queries are answered by the DNS module
+    // itself (`dns-out`) instead of the raw query packet being forwarded around.
+    let dns_direct_rule =
+        json!({ "type": "field", "inboundTag": [DNS_DIRECT_TAG], "outboundTag": "direct" });
+    let dns_remote_target = if s.dns_via_proxy { "proxy" } else { "direct" };
+    let dns_remote_rule = json!({ "type": "field", "inboundTag": [DNS_REMOTE_TAG], "outboundTag": dns_remote_target });
+    // Bypass-geo rule for the always-on `force-in` inbound — ahead of the geo/user
+    // rules so traffic arriving there reaches `proxy` first.
     let force_rule = json!({ "type": "field", "inboundTag": ["force-in"], "network": "tcp,udp", "outboundTag": "proxy" });
-    let dns_rule = json!({ "type": "field", "inboundTag": ["socks-in", "http-in"], "port": 53, "outboundTag": dns_outbound_tag });
+    let dns_rule = json!({ "type": "field", "inboundTag": ["socks-in", "http-in"], "port": 53, "outboundTag": DNS_OUT_TAG });
     let final_rule = json!({ "type": "field", "inboundTag": ["socks-in", "http-in"], "network": "tcp,udp", "outboundTag": "proxy" });
 
+    // Present in every mode, ahead of the user rules: fake-IP destinations must
+    // reach `proxy` (the sniffer recovers the real domain there).
+    let mut head: Vec<Value> = vec![dns_direct_rule, dns_remote_rule, force_rule, dns_rule];
+    if s.fake_dns {
+        head.push(json!({ "type": "field", "ip": [FAKEIP_INET4_RANGE], "outboundTag": "proxy" }));
+    }
+
     if s.routing_mode == crate::state::RoutingMode::Rules && !routing_rules.is_empty() {
-        let mut rules: Vec<Value> = vec![force_rule, dns_rule];
+        let mut rules: Vec<Value> = head;
         // xray can't tell which Android package opened a connection. Dropping just
         // the package condition would widen the rule to every app, so a rule that
         // names packages is left out on xray entirely.
@@ -678,18 +770,14 @@ fn build_routing(
         && let Some(cr) = s.custom_routing.as_deref().filter(|x| !x.trim().is_empty())
         && let Some(Value::Array(parsed)) = parse_json_safe(cr)
     {
-        let mut rules: Vec<Value> = vec![force_rule, dns_rule];
+        let mut rules: Vec<Value> = head;
         rules.extend(parsed);
         rules.push(final_rule);
         return json!({ "domainStrategy": domain_strategy, "rules": rules });
     }
 
-    let mut rules: Vec<Value> = vec![force_rule, dns_rule];
-    if s.fake_dns {
-        rules.push(json!({ "type": "field", "ip": [FAKEIP_INET4_RANGE], "outboundTag": "proxy" }));
-    }
-    rules.push(final_rule);
-    json!({ "domainStrategy": domain_strategy, "rules": rules })
+    head.push(final_rule);
+    json!({ "domainStrategy": domain_strategy, "rules": head })
 }
 
 /// Build the full Xray config object from a profile + settings.
@@ -723,7 +811,6 @@ pub fn build_xray_config(
     let socks_port = s.local_socks_port.unwrap_or(DEFAULT_LOCAL_SOCKS_PORT);
     let http_port = s.local_http_port.unwrap_or(DEFAULT_LOCAL_HTTP_PORT);
     let force_port = force_socks_port(socks_port, http_port);
-    let dns_outbound_tag = if s.dns_via_proxy { "proxy" } else { "direct" };
     let listen = if s.allow_non_localhost {
         "0.0.0.0"
     } else {
@@ -755,11 +842,17 @@ pub fn build_xray_config(
         None => json!({ "allowTransparent": false }),
     };
 
+    // With fake DNS on, the sniffer must map the fake IPs back to domains.
+    let dest_override = if s.fake_dns {
+        json!(["fakedns", "http", "tls", "quic"])
+    } else {
+        json!(["http", "tls", "quic"])
+    };
     let mut inbounds = vec![
         json!({
             "tag": "socks-in", "port": socks_port, "listen": listen, "protocol": "socks",
             "settings": socks_settings,
-            "sniffing": { "enabled": s.domain_sniffing, "destOverride": ["http", "tls", "quic"], "routeOnly": s.route_only },
+            "sniffing": { "enabled": s.domain_sniffing, "destOverride": dest_override, "routeOnly": s.route_only },
         }),
         json!({
             "tag": "http-in", "port": http_port, "listen": listen, "protocol": "http",
@@ -789,19 +882,79 @@ pub fn build_xray_config(
         }
     }
 
+    // Off-tunnel hostnames the domestic DNS must own: every profile dialed as a
+    // server (main outbound, chain hops, load-balancing targets), plus the
+    // domains of user rules that route direct.
+    let mut direct_domains: Vec<String> = Vec::new();
+    push_direct_domain(&mut direct_domains, p.address());
+    for o in targets.iter().chain(hops.iter()) {
+        if let Some(tag) = o["tag"].as_str()
+            && let Some(tp) = profiles.iter().find(|x| x.meta().id == tag)
+        {
+            push_direct_domain(&mut direct_domains, tp.address());
+        }
+    }
+    if s.routing_mode == crate::state::RoutingMode::Rules {
+        for r in routing_rules.iter().filter(|r| r.enabled) {
+            if resolve(&r.outbound_tag) != "direct" {
+                continue;
+            }
+            for d in r.domain.as_deref().unwrap_or(&[]) {
+                let d = d.trim();
+                // Geo sets and regexp/keyword patterns can't be handed to the DNS
+                // module as-is; plain, `full:` and `domain:` entries can.
+                if d.is_empty()
+                    || d.starts_with("geosite:")
+                    || d.starts_with("ext:")
+                    || d.starts_with("regexp:")
+                    || d.starts_with("keyword:")
+                    || d.starts_with("dotless:")
+                {
+                    continue;
+                }
+                let rule = if d.starts_with("full:") || d.starts_with("domain:") {
+                    d.to_string()
+                } else {
+                    format!("domain:{d}")
+                };
+                if !direct_domains.contains(&rule) {
+                    direct_domains.push(rule);
+                }
+            }
+        }
+    }
+
     let mut outbounds = vec![outbound];
     outbounds.extend(targets);
     outbounds.extend(hops);
+    // DNS-module handler: answers the port-53 traffic the tun feeds in. Its
+    // `address` only serves non-A/AAAA queries (e.g. HTTPS/SVCB records), which
+    // it forwards over TCP to the first usable remote resolver.
+    let remote = split_list(s.remote_dns.as_deref().unwrap_or(""), &DEFAULT_REMOTE_DNS);
+    let dns_forward = remote
+        .iter()
+        .filter_map(|a| dns_host_of(a))
+        .find(|h| h != "localhost" && h != "fakedns")
+        .unwrap_or_else(|| "1.1.1.1".to_string());
+    outbounds.push(json!({
+        "protocol": "dns",
+        "tag": DNS_OUT_TAG,
+        "settings": { "address": dns_forward, "port": 53, "network": "tcp", "nonIPQuery": "skip" },
+    }));
     outbounds.push(json!({ "protocol": "freedom", "tag": "direct" }));
     outbounds.push(json!({ "protocol": "blackhole", "tag": "block" }));
 
-    Ok(json!({
+    let mut root = json!({
         "log": { "loglevel": log_level },
-        "dns": build_dns(s),
+        "dns": build_dns(s, &direct_domains),
         "inbounds": inbounds,
         "outbounds": outbounds,
-        "routing": build_routing(s, dns_outbound_tag, routing_rules, &resolve),
-    }))
+        "routing": build_routing(s, routing_rules, &resolve),
+    });
+    if s.fake_dns {
+        root["fakeDns"] = json!({ "ipPool": FAKEIP_INET4_RANGE, "poolSize": 65535 });
+    }
+    Ok(root)
 }
 
 #[cfg(test)]
@@ -940,10 +1093,161 @@ mod tests {
         // Internal bypass-geo port: localhost-only and noauth, never off-box.
         assert_eq!(force["listen"], "127.0.0.1");
         assert_eq!(force["settings"]["auth"], "noauth");
-        // Its rule routes straight to proxy and is the first routing rule.
+        // Its rule routes straight to proxy, ahead of the catch-all.
         let rules = cfg["routing"]["rules"].as_array().unwrap();
-        assert_eq!(rules[0]["inboundTag"][0], "force-in");
-        assert_eq!(rules[0]["outboundTag"], "proxy");
+        let force_idx = rules
+            .iter()
+            .position(|r| r["inboundTag"][0] == "force-in")
+            .expect("force-in rule present");
+        assert_eq!(rules[force_idx]["outboundTag"], "proxy");
+        let final_rule = rules
+            .iter()
+            .position(|r| r["inboundTag"][0] == "socks-in" && r["network"] == "tcp,udp")
+            .expect("catch-all rule present");
+        assert!(force_idx < final_rule);
+    }
+
+    fn direct_rule(domains: Vec<&str>) -> RoutingRule {
+        RoutingRule {
+            domain: Some(domains.into_iter().map(str::to_string).collect()),
+            ..source_rule("direct")
+        }
+    }
+
+    #[test]
+    fn dns_servers_split_remote_direct_with_defaults() {
+        let p = sample();
+        let cfg = build_xray_config(
+            &p,
+            &AdvancedSettings::default(),
+            &[],
+            std::slice::from_ref(&p),
+        )
+        .unwrap();
+        // Domestic first (it owns the server hostname), remote last (general path).
+        let servers = cfg["dns"]["servers"].as_array().unwrap();
+        assert_eq!(servers.len(), 2);
+        assert_eq!(servers[0]["address"], "tcp://1.1.1.1");
+        assert_eq!(servers[0]["tag"], "dns-direct");
+        assert_eq!(servers[0]["skipFallback"], true);
+        assert_eq!(servers[0]["domains"], json!(["full:e.x"]));
+        assert_eq!(servers[1]["address"], "tcp://1.1.1.1");
+        assert_eq!(servers[1]["tag"], "dns-remote");
+
+        let rules = cfg["routing"]["rules"].as_array().unwrap();
+        assert!(
+            rules
+                .iter()
+                .any(|r| r["inboundTag"] == json!(["dns-direct"]) && r["outboundTag"] == "direct")
+        );
+        assert!(
+            rules
+                .iter()
+                .any(|r| r["inboundTag"] == json!(["dns-remote"]) && r["outboundTag"] == "proxy")
+        );
+        assert!(
+            rules
+                .iter()
+                .any(|r| r["inboundTag"] == json!(["socks-in", "http-in"])
+                    && r["port"] == 53
+                    && r["outboundTag"] == "dns-out")
+        );
+
+        let obs = cfg["outbounds"].as_array().unwrap();
+        let dns_out = obs
+            .iter()
+            .find(|o| o["tag"] == "dns-out")
+            .expect("dns-out outbound present");
+        assert_eq!(dns_out["protocol"], "dns");
+        assert_eq!(dns_out["settings"]["address"], "1.1.1.1");
+        assert_eq!(dns_out["settings"]["nonIPQuery"], "skip");
+    }
+
+    #[test]
+    fn dns_via_proxy_off_takes_the_remote_resolvers_direct() {
+        let p = sample();
+        let s = AdvancedSettings {
+            dns_via_proxy: false,
+            ..Default::default()
+        };
+        let cfg = build_xray_config(&p, &s, &[], std::slice::from_ref(&p)).unwrap();
+        let rules = cfg["routing"]["rules"].as_array().unwrap();
+        assert!(
+            rules
+                .iter()
+                .any(|r| r["inboundTag"] == json!(["dns-remote"]) && r["outboundTag"] == "direct")
+        );
+    }
+
+    #[test]
+    fn domestic_dns_overrides_and_localhost_is_supported() {
+        let p = sample();
+        let s = AdvancedSettings {
+            domestic_dns: Some("localhost, tcp://9.9.9.9".into()),
+            remote_dns: Some("tcp://1.1.1.1".into()),
+            ..Default::default()
+        };
+        let cfg = build_xray_config(&p, &s, &[], std::slice::from_ref(&p)).unwrap();
+        let servers = cfg["dns"]["servers"].as_array().unwrap();
+        assert_eq!(servers[0]["address"], "localhost");
+        assert_eq!(servers[0]["tag"], "dns-direct");
+        assert_eq!(servers[1]["address"], "tcp://9.9.9.9");
+        assert_eq!(servers[2]["tag"], "dns-remote");
+    }
+
+    #[test]
+    fn direct_rule_domains_join_the_domestic_dns() {
+        let p = sample();
+        let s = AdvancedSettings {
+            routing_mode: crate::state::RoutingMode::Rules,
+            ..Default::default()
+        };
+        let rules = vec![direct_rule(vec![
+            "example.com",
+            "full:bypass.example",
+            "geosite:cn",
+        ])];
+        let cfg = build_xray_config(&p, &s, &rules, std::slice::from_ref(&p)).unwrap();
+        let domains = cfg["dns"]["servers"][0]["domains"].as_array().unwrap();
+        let has = |d: &str| domains.iter().any(|v| v == d);
+        assert!(has("full:e.x"));
+        assert!(has("domain:example.com"));
+        assert!(has("full:bypass.example"));
+        assert!(
+            !domains
+                .iter()
+                .any(|v| v.as_str().unwrap_or("").starts_with("geosite:"))
+        );
+    }
+
+    #[test]
+    fn fake_dns_wires_the_pool_allocator_and_sniffer() {
+        let p = sample();
+        let s = AdvancedSettings {
+            fake_dns: true,
+            ..Default::default()
+        };
+        let cfg = build_xray_config(&p, &s, &[], std::slice::from_ref(&p)).unwrap();
+        assert_eq!(cfg["fakeDns"]["ipPool"], FAKEIP_INET4_RANGE);
+        let servers = cfg["dns"]["servers"].as_array().unwrap();
+        assert_eq!(servers[1]["address"], "fakedns");
+        assert_eq!(servers[1]["domains"], json!(["regexp:.+"]));
+        let sniffing = &cfg["inbounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["tag"] == "socks-in")
+            .unwrap()["sniffing"];
+        assert_eq!(
+            sniffing["destOverride"],
+            json!(["fakedns", "http", "tls", "quic"])
+        );
+        let rules = cfg["routing"]["rules"].as_array().unwrap();
+        assert!(
+            rules
+                .iter()
+                .any(|r| r["ip"] == json!([FAKEIP_INET4_RANGE]) && r["outboundTag"] == "proxy")
+        );
     }
 
     #[test]

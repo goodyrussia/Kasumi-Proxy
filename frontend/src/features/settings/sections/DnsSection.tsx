@@ -48,6 +48,7 @@ export function DnsSection({
             label={t("settings.dnsRemote")}
             value={settings.remoteDns ?? ""}
             placeholder={t("settings.dnsRemotePh")}
+            hint={t("settings.dnsRemoteHint")}
             mono={false}
             onChange={(value) => set("remoteDns", value)}
           />
@@ -55,6 +56,7 @@ export function DnsSection({
             label={t("settings.dnsDomestic")}
             value={settings.domesticDns ?? ""}
             placeholder={t("settings.dnsDomesticPh")}
+            hint={t("settings.dnsDomesticHint")}
             mono={false}
             onChange={(value) => set("domesticDns", value)}
           />

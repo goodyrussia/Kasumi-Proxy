@@ -322,9 +322,11 @@ const ru = {
   "settings.allowNonLocalhostSub":
     "Привязать прокси-порты к 0.0.0.0, чтобы другие устройства в сети могли подключаться",
   "settings.dnsRemote": "Удалённый DNS (через прокси)",
-  "settings.dnsRemotePh": "1.1.1.1, 8.8.8.8",
+  "settings.dnsRemotePh": "tcp://1.1.1.1",
   "settings.dnsDomestic": "Локальный DNS (напрямую)",
-  "settings.dnsDomesticPh": "223.5.5.5",
+  "settings.dnsDomesticPh": "tcp://1.1.1.1",
+  "settings.dnsRemoteHint": "Через прокси; tcp:// работает при блокировке UDP DNS",
+  "settings.dnsDomesticHint": "Прямые/bypass домены + адрес сервера; localhost = системный DNS",
   "settings.dnsHosts": "Статические hosts",
   "settings.dnsHostsPh": "example.com=1.2.3.4\ndomain.net=5.6.7.8",
   "settings.dnsHostsHint": "Один host=ip на строку или сырой JSON-объект",

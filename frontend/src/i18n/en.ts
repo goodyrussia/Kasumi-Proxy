@@ -316,9 +316,11 @@ const en = {
   "settings.allowNonLocalhostSub":
     "Bind proxy ports to 0.0.0.0 so other devices on the network can connect",
   "settings.dnsRemote": "Remote DNS (via proxy)",
-  "settings.dnsRemotePh": "1.1.1.1, 8.8.8.8",
+  "settings.dnsRemotePh": "tcp://1.1.1.1",
   "settings.dnsDomestic": "Domestic DNS (direct)",
-  "settings.dnsDomesticPh": "223.5.5.5",
+  "settings.dnsDomesticPh": "tcp://1.1.1.1",
+  "settings.dnsRemoteHint": "Sent through the proxy; tcp:// survives UDP-blocked networks",
+  "settings.dnsDomesticHint": "Direct/bypass domains + server host; localhost = system DNS",
   "settings.dnsHosts": "Static hosts",
   "settings.dnsHostsPh": "example.com=1.2.3.4\\ndomain.net=5.6.7.8",
   "settings.dnsHostsHint": "One host=ip per line, or raw JSON object",

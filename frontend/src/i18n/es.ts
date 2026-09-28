@@ -311,9 +311,12 @@ const es = {
   "settings.allowNonLocalhostSub":
     "Vincular puertos del proxy a 0.0.0.0 para que otros dispositivos de la red puedan conectarse",
   "settings.dnsRemote": "DNS remoto (mediante proxy)",
-  "settings.dnsRemotePh": "1.1.1.1, 8.8.8.8",
+  "settings.dnsRemotePh": "tcp://1.1.1.1",
   "settings.dnsDomestic": "DNS doméstico (directo)",
-  "settings.dnsDomesticPh": "223.5.5.5",
+  "settings.dnsDomesticPh": "tcp://1.1.1.1",
+  "settings.dnsRemoteHint": "Se envía por el proxy; tcp:// sobrevive si bloquean UDP DNS",
+  "settings.dnsDomesticHint":
+    "Dominios directos/bypass + host del servidor; localhost = DNS del sistema",
   "settings.dnsHosts": "Hosts estáticos",
   "settings.dnsHostsPh": "example.com=1.2.3.4\ndomain.net=5.6.7.8",
   "settings.dnsHostsHint": "Un host=ip por línea, o un objeto JSON sin procesar",

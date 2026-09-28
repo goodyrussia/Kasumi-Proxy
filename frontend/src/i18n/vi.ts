@@ -308,9 +308,11 @@ const vi = {
   "settings.allowNonLocalhostSub":
     "Gắn cổng proxy vào 0.0.0.0 để các thiết bị khác trên mạng có thể kết nối",
   "settings.dnsRemote": "DNS từ xa (qua proxy)",
-  "settings.dnsRemotePh": "1.1.1.1, 8.8.8.8",
+  "settings.dnsRemotePh": "tcp://1.1.1.1",
   "settings.dnsDomestic": "DNS nội địa (trực tiếp)",
-  "settings.dnsDomesticPh": "223.5.5.5",
+  "settings.dnsDomesticPh": "tcp://1.1.1.1",
+  "settings.dnsRemoteHint": "Gửi qua proxy; tcp:// vượt qua mạng chặn UDP DNS",
+  "settings.dnsDomesticHint": "Miền trực tiếp/bypass + host máy chủ; localhost = DNS hệ thống",
   "settings.dnsHosts": "Hosts tĩnh",
   "settings.dnsHostsPh": "example.com=1.2.3.4\ndomain.net=5.6.7.8",
   "settings.dnsHostsHint": "Mỗi dòng một host=ip hoặc một JSON object thô",
