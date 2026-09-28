@@ -1,3 +1,9 @@
+## v0.6.0 — 2026-09-28
+
+### Changes
+
+- [`7f67691`](https://github.com/goodyrussia/Kasumi-Proxy/commit/7f67691) feat(dns): Exclave-style DNS split — remote via proxy, domestic direct, answered by the core
+
 ## v0.5.1 — 2026-09-28
 
 ### Changes
