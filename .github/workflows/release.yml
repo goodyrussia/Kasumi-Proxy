@@ -64,6 +64,12 @@ jobs:
         run: bun install --frozen-lockfile
 
       # ── Gate: the release must not ship something CI would reject. ──
+      - name: Stage geoip/geosite data
+        run: |
+          mkdir -p bin
+          curl -fsSL https://github.com/v2fly/geoip/releases/latest/download/geoip.dat -o bin/geoip.dat
+          curl -fsSL https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat -o bin/geosite.dat
+
       - name: Gate — frontend lint/tests + config-compat against the pinned core
         run: |
           bunx biome check

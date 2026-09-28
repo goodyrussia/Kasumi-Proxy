@@ -10,6 +10,9 @@ module/bin/*
 # Production webroot built by build-webroot.sh.
 module/webroot/*
 
+# Config-compat staging dir (host core + geoip/geosite staged by CI or locally).
+/bin/
+
 # ── Node / Vite ──────────────────────────────────────────────────
 node_modules/
 frontend/dist/

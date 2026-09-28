@@ -172,6 +172,14 @@ jobs:
       - name: Lint module + build scripts
         run: shellcheck -s sh module/*.sh && shellcheck scripts/*.sh
 
+      # The harness skips geo-dependent cases when geoip.dat is absent; stage the
+      # upstream geo data so those cases (fake-dns, geoip/geosite rules) validate too.
+      - name: Stage geoip/geosite data
+        run: |
+          mkdir -p bin
+          curl -fsSL https://github.com/v2fly/geoip/releases/latest/download/geoip.dat -o bin/geoip.dat
+          curl -fsSL https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat -o bin/geosite.dat
+
       - name: Validate generated configs against the pinned core
         run: scripts/check-binary-compat.sh
 

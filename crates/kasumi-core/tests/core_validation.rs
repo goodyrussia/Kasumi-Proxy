@@ -439,7 +439,6 @@ fn settings_cases() -> Vec<Case> {
     // Fake DNS + dns through proxy + ipv6.
     {
         let s = AdvancedSettings {
-            fake_dns: true,
             dns_via_proxy: true,
             ipv6_enabled: Some(true),
             remote_dns: Some("1.1.1.1, 8.8.8.8".into()),
@@ -452,6 +451,23 @@ fn settings_cases() -> Vec<Case> {
             rules: vec![],
             others: vec![],
             needs_geo: false,
+        });
+    }
+
+    // Fake-DNS (xray emits `expectIPs: geoip:!private` → needs geoip.dat staged).
+    {
+        let s = AdvancedSettings {
+            fake_dns: true,
+            remote_dns: Some("1.1.1.1, 8.8.8.8".into()),
+            ..Default::default()
+        };
+        cases.push(Case {
+            name: "settings/dns-fake".into(),
+            profile: base(),
+            settings: s,
+            rules: vec![],
+            others: vec![],
+            needs_geo: true,
         });
     }
 
