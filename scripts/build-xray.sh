@@ -65,12 +65,51 @@ if [ ! -d "$SRC" ]; then
 fi
 
 echo "→ building xray $XRAY_TAG ($GOOS_ARG/$GOARCH_ARG) → $OUT"
+
+# ── Toolchain selection ──────────────────────────────────────────────
+# Android builds MUST use CGO. Go's pure resolver cannot reach Android's
+# system DNS (netd): with CGO_ENABLED=0 the core reads resolv.conf, tries
+# 127.0.0.1 / [::1]:53 and every server-name bootstrap lookup dies with
+# "connection refused" (nothing listens there on Android). Upstream Xray
+# builds its Android assets with CGO_ENABLED=1 + NDK clang (API level 24);
+# mirror that exactly.
+CC_TARGET=""
+LDFLAGS="-s -w -buildid="
+if [ "$GOOS_ARG" = "android" ]; then
+	NDK="${NDK_ROOT:-${ANDROID_NDK_HOME:-${ANDROID_NDK:-}}}"
+	if [ -z "$NDK" ] || [ ! -d "$NDK" ]; then
+		echo "❌ android builds need the NDK: set NDK_ROOT (or ANDROID_NDK_HOME)" >&2
+		exit 1
+	fi
+	case "$GOARCH_ARG" in
+	arm64) TRIPLE=aarch64-linux-android ;;
+	amd64) TRIPLE=x86_64-linux-android ;;
+	*)
+		echo "❌ unsupported android arch: $GOARCH_ARG" >&2
+		exit 1
+		;;
+	esac
+	CC_TARGET="$(find "$NDK/toolchains/llvm/prebuilt" -path "*/bin/${TRIPLE}24-clang" 2>/dev/null | head -n1)"
+	if [ -z "$CC_TARGET" ]; then
+		echo "❌ no ${TRIPLE}24-clang under $NDK/toolchains/llvm/prebuilt" >&2
+		exit 1
+	fi
+	LDFLAGS="-s -w -buildid= -checklinkname=0"
+	echo "→ NDK clang: $CC_TARGET"
+fi
+
 mkdir -p "$(dirname "$OUT")"
 (
 	cd "$SRC"
-	CGO_ENABLED=0 GOOS="$GOOS_ARG" GOARCH="$GOARCH_ARG" \
-		go build -mod=readonly -trimpath -buildvcs=false \
-		-ldflags='-s -w -buildid=' -o "$OUT" ./main
+	if [ "$GOOS_ARG" = "android" ]; then
+		CGO_ENABLED=1 CC="$CC_TARGET" GOOS="$GOOS_ARG" GOARCH="$GOARCH_ARG" \
+			go build -mod=readonly -trimpath -buildvcs=false \
+			-ldflags="$LDFLAGS" -o "$OUT" ./main
+	else
+		CGO_ENABLED=0 GOOS="$GOOS_ARG" GOARCH="$GOARCH_ARG" \
+			go build -mod=readonly -trimpath -buildvcs=false \
+			-ldflags="$LDFLAGS" -o "$OUT" ./main
+	fi
 )
 chmod 755 "$OUT"
 printf '   %s\n' "$(du -h "$OUT" | cut -f1) $OUT"

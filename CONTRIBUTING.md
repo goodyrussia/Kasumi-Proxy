@@ -27,7 +27,7 @@ Android). The frontend types, Zod schemas and defaults in `frontend/src/generate
 | [bun](https://bun.sh) | The UI. |
 | `shellcheck` | Linting `module/*.sh`. |
 | [Go](https://go.dev) | Building the pinned Xray core from source. |
-| Android NDK (`NDK_ROOT`) + `cargo-ndk` + the `aarch64-linux-android` rustup target | Cross-building the daemon for the module. |
+| Android NDK (`NDK_ROOT`) + `cargo-ndk` + the `aarch64-linux-android` rustup target | Cross-building the Xray core (CGO resolver) and the daemon for the module. |
 | `curl`, `jq`, `unzip`, `zip` | Binary fetching + packaging. |
 
 ## First build
