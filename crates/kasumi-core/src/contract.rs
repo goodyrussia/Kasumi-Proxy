@@ -4,8 +4,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::enums::CoreEngine;
-
 /// Canonical log-file identifiers (backend log paths ↔ UI log picker).
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::EnumIter, specta::Type,
@@ -14,20 +12,8 @@ use crate::enums::CoreEngine;
 pub enum LogTarget {
     Daemon,
     Xray,
-    Singbox,
     #[serde(rename = "tun-engine")]
     TunEngine,
-}
-
-/// One profile's core resolution (the `resolveCores` reply): the engine the
-/// backend will actually run it on, and the engine a capability pins it to
-/// (`None` when the profile is freely selectable). The UI renders these instead
-/// of re-implementing the resolution matrix (`core::resolve_core`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct CoreResolution {
-    pub resolved: CoreEngine,
-    pub forced: Option<CoreEngine>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -38,8 +24,7 @@ pub enum TestKind {
     Speed,
 }
 
-/// How a network job (subscription fetch, asset download) reaches the net.
-/// Reused as a subscription's `updateMode`.
+/// How a network job (asset download) reaches the net.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, specta::Type)]
 #[serde(rename_all = "lowercase")]
 pub enum FetchMode {
@@ -75,8 +60,6 @@ pub struct ServiceState {
     pub upload_bytes: u64,
     pub download_bytes: u64,
     pub uptime_sec: u64,
-    /// Engine actually running (PID truth), or `null` when nothing is up.
-    pub engine: Option<CoreEngine>,
 }
 
 /// Full status frame pushed to clients: runtime facts + active profile + core label.
@@ -98,23 +81,12 @@ pub struct ServiceStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Capabilities {
-    /// UI runtime: `"ksu-js"` | `"web"` | `"mock"` (and, on desktop, `"tauri"`).
+    /// UI runtime: `"ksu-js"` | `"web"` | `"mock"`.
     pub bridge: String,
     /// Installed Xray version, empty when not installed.
     pub xray_version: String,
-    /// Installed sing-box version, empty when not installed.
-    pub singbox_version: String,
     /// Whether the host can route through a TUN device.
     pub tun: bool,
-}
-
-/// Daemon push: it fetched & applied a subscription headlessly.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
-pub struct SubAppliedEvent {
-    #[serde(rename = "subId")]
-    pub sub_id: String,
-    pub remarks: String,
-    pub count: u32,
 }
 
 /// Daemon push: it refreshed geo assets headlessly. `restarted` says whether the
@@ -148,14 +120,12 @@ pub struct RpcResponse {
     pub error: Option<String>,
 }
 
-/// Server-initiated frames (no `id`): live status and headless sub-apply.
+/// Server-initiated frames (no `id`): live status and geo-asset refreshes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(tag = "event")]
 pub enum PushFrame {
     #[serde(rename = "status")]
     Status { value: ServiceStatus },
-    #[serde(rename = "subApplied")]
-    SubApplied { value: SubAppliedEvent },
     #[serde(rename = "assetsUpdated")]
     AssetsUpdated { value: AssetsUpdatedEvent },
 }
@@ -189,7 +159,6 @@ mod tests {
                 upload_bytes: 10,
                 download_bytes: 20,
                 uptime_sec: 5,
-                engine: Some(CoreEngine::Xray),
             },
             active_id: Some("p1".into()),
             core: "Xray 25.5.16".into(),
@@ -201,7 +170,6 @@ mod tests {
         assert_eq!(v["uploadBytes"], 10);
         assert_eq!(v["downloadBytes"], 20);
         assert_eq!(v["uptimeSec"], 5);
-        assert_eq!(v["engine"], "xray");
         assert_eq!(v["activeId"], "p1");
         assert_eq!(v["core"], "Xray 25.5.16");
         assert_eq!(v["pendingRestart"], true);
@@ -218,7 +186,6 @@ mod tests {
             "uploadBytes": 0,
             "downloadBytes": 0,
             "uptimeSec": 0,
-            "engine": "xray",
             "activeId": null,
             "core": "",
         });
@@ -227,40 +194,22 @@ mod tests {
     }
 
     #[test]
-    fn engine_null_when_stopped() {
-        let s = ServiceState {
-            state: RunState::Stopped,
-            error: None,
-            upload_bytes: 0,
-            download_bytes: 0,
-            uptime_sec: 0,
-            engine: None,
-        };
-        let v = serde_json::to_value(&s).unwrap();
-        assert!(v["engine"].is_null());
-    }
-
-    #[test]
     fn push_frame_tagged_on_event() {
-        let f = PushFrame::SubApplied {
-            value: SubAppliedEvent {
-                sub_id: "s1".into(),
-                remarks: "Home".into(),
-                count: 3,
+        let f = PushFrame::AssetsUpdated {
+            value: AssetsUpdatedEvent {
+                remarks: vec!["geoip".into(), "geosite".into()],
+                restarted: true,
             },
         };
         let v = serde_json::to_value(&f).unwrap();
-        assert_eq!(v["event"], "subApplied");
-        assert_eq!(v["value"]["subId"], "s1");
-        assert_eq!(v["value"]["count"], 3);
+        assert_eq!(v["event"], "assetsUpdated");
+        assert_eq!(v["value"]["remarks"][0], "geoip");
+        assert_eq!(v["value"]["restarted"], true);
     }
 
     #[test]
     fn log_target_values() {
-        assert_eq!(
-            serde_json::to_string(&LogTarget::Singbox).unwrap(),
-            "\"singbox\""
-        );
+        assert_eq!(serde_json::to_string(&LogTarget::Xray).unwrap(), "\"xray\"");
         assert_eq!(
             serde_json::to_string(&LogTarget::TunEngine).unwrap(),
             "\"tun-engine\""

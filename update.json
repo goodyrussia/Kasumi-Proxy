@@ -1,6 +1,6 @@
 {
-  "version": "v0.4.4",
-  "versionCode": 12,
-  "zipUrl": "https://github.com/loss-and-quick/Kasumi-Proxy/releases/download/v0.4.4/kasumi-proxy-module-v0.4.4.zip",
-  "changelog": "https://raw.githubusercontent.com/loss-and-quick/Kasumi-Proxy/main/CHANGELOG.md"
+  "version": "v0.5.0",
+  "versionCode": 13,
+  "zipUrl": "https://github.com/goodyrussia/Kasumi-Proxy/releases/download/v0.5.0/kasumi-proxy-module-v0.5.0.zip",
+  "changelog": "https://raw.githubusercontent.com/goodyrussia/Kasumi-Proxy/main/CHANGELOG.md"
 }

@@ -29,7 +29,6 @@ export type Dispatch = (cmd: Command_Deserialize) => Promise<Response_Serialize>
 /** Push streams a transport exposes. Each callback gets the raw payload object. */
 export interface PushStreams {
   subscribeStatus(cb: (raw: unknown) => void): () => void;
-  subscribeSubApplied(cb: (raw: unknown) => void): () => void;
   subscribeAssetsUpdated(cb: (raw: unknown) => void): () => void;
 }
 
@@ -230,36 +229,6 @@ export function createBridge(dispatch: Dispatch, push: PushStreams): Bridge {
       return next;
     },
 
-    async fetchSubscription(url, opts) {
-      const profiles = await dispatch({
-        cmd: "fetchSubscription",
-        url,
-        mode: opts?.mode ?? "auto",
-        userAgent: opts?.userAgent ?? null,
-        allowInsecure: opts?.allowInsecure ?? false,
-      });
-      return asProfiles(profiles);
-    },
-    async applySubscription(subId) {
-      // Returns the canonical state — refresh the cache like readState/mutate do, so
-      // the next cache reader (e.g. ping's address/port lookup) can't drift after a
-      // subscription apply swaps the profile set out from under it.
-      const next = asState(await dispatch({ cmd: "applySubscription", subId }));
-      lastState = next;
-      return next;
-    },
-    onSubApplied(cb) {
-      return push.subscribeSubApplied((raw) => {
-        const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-        if (typeof o.subId === "string") {
-          cb({
-            subId: o.subId,
-            remarks: typeof o.remarks === "string" ? o.remarks : "",
-            count: typeof o.count === "number" ? o.count : 0,
-          });
-        }
-      });
-    },
     onAssetsUpdated(cb) {
       return push.subscribeAssetsUpdated((raw) => {
         const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
@@ -286,11 +255,6 @@ export function createBridge(dispatch: Dispatch, push: PushStreams): Bridge {
     },
     async reloadAppFilter() {
       return okResult(() => dispatch({ cmd: "reloadAppFilter" }));
-    },
-
-    async resolveCores(profiles) {
-      const r = await dispatch({ cmd: "resolveCores", profiles });
-      return r.kind === "coreResolutions" ? r.value : wrongKind(r, "coreResolutions");
     },
 
     async chainCandidates(profile) {

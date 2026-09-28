@@ -1,16 +1,16 @@
 //! The background loops: boot auto-start, network/resume re-pin, watchdog,
-//! sub-updater and the 1 Hz status push.
+//! asset-updater and the 1 Hz status push.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use kasumi_core::contract::{AssetsUpdatedEvent, PushFrame, RunState, SubAppliedEvent};
+use kasumi_core::contract::{AssetsUpdatedEvent, PushFrame, RunState};
 use kasumi_core::state::AppState;
 
 use crate::fsjson::read_json;
 use crate::platform::StopDataPath;
-use crate::{asset_update, sub_update, updater};
+use crate::{asset_update, updater};
 
 use super::Service;
 use super::lifecycle::LifecycleCmd;
@@ -45,7 +45,7 @@ impl Service {
             .service_state()
             .await
             .ok()
-            .map(|s| s.engine.is_some() || s.state == RunState::Connecting)
+            .map(|s| s.state != RunState::Stopped)
             .unwrap_or(false);
         if coming_up {
             let _ = self.run_lifecycle(LifecycleCmd::Restart(None)).await;
@@ -53,6 +53,8 @@ impl Service {
         coming_up
     }
 
+    /// Re-pin routing on uplink changes, and re-emit status. Android's connectivity
+    /// service fires on every network switch.
     pub(super) fn spawn_network_watch(self: &Arc<Self>) {
         let Some(mut rx) = self.platform.watch_network_change() else {
             return;
@@ -71,25 +73,6 @@ impl Service {
         });
     }
 
-    /// Restart the data-path each time the machine wakes from suspend/hibernate: a core
-    /// left running across a sleep can hold stale routing/DNS state, and the uplink
-    /// watcher doesn't fire when the default route survives the sleep. Driven by the
-    /// platform's resume signal (logind `PrepareForSleep(false)` on Linux, a power
-    /// notification on Windows); `None` where the platform has no such signal.
-    pub(super) fn spawn_resume_watch(self: &Arc<Self>) {
-        let Some(mut rx) = self.platform.watch_system_resume() else {
-            return;
-        };
-        let this = Arc::clone(self);
-        tokio::spawn(async move {
-            while rx.recv().await.is_some() {
-                if this.restart_if_up().await {
-                    this.emit_status().await;
-                }
-            }
-        });
-    }
-
     pub(super) fn spawn_watchdog(self: &Arc<Self>) {
         let this = Arc::clone(self);
         tokio::spawn(async move {
@@ -99,7 +82,7 @@ impl Service {
                     .platform
                     .service_state()
                     .await
-                    .map(|s| s.engine.is_some())
+                    .map(|s| s.state != RunState::Stopped)
                     .unwrap_or(false);
                 if !up {
                     if this.set_connectivity(Connectivity::Unknown) {
@@ -128,31 +111,9 @@ impl Service {
         });
     }
 
-    pub(super) fn spawn_sub_updater(self: &Arc<Self>) {
-        let this = Arc::clone(self);
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(updater::TICK).await;
-                let events = this.events.clone();
-                let on_applied = move |info: SubAppliedEvent| {
-                    let _ = events.send(PushFrame::SubApplied { value: info });
-                };
-                let mut attempts = this.sub_attempts.lock().await;
-                sub_update::tick(
-                    &*this.platform,
-                    this.as_ref(),
-                    &this.serialize,
-                    &mut attempts,
-                    &on_applied,
-                )
-                .await;
-            }
-        });
-    }
-
     /// Re-fetch the geo assets on the shared updater cadence. Runs on its own task
-    /// (and its own backoff map) so a slow multi-megabyte download never delays the
-    /// subscription pass; both take the lifecycle lock only to write or restart.
+    /// (and its own backoff map) so a slow multi-megabyte download never blocks
+    /// anything else; it takes the lifecycle lock only to write or restart.
     pub(super) fn spawn_asset_updater(self: &Arc<Self>) {
         let this = Arc::clone(self);
         tokio::spawn(async move {

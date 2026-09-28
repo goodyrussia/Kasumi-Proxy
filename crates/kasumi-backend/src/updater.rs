@@ -1,7 +1,6 @@
-//! Shared scaffolding for the daemon's headless background updaters. Subscriptions
-//! ([`crate::sub_update`]) and geo assets ([`crate::asset_update`]) run on the same
-//! cadence with the same due/backoff rule and the same lifecycle hook — they differ
-//! only in what they do with the fetched content.
+//! Shared scaffolding for the daemon's headless background updaters. The geo
+//! asset updater ([`crate::asset_update`]) owns the due/backoff rule and the
+//! lifecycle hook that bounces the core when data actually changed.
 
 use std::time::Duration;
 

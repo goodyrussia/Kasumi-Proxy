@@ -7,32 +7,28 @@ mkdir -p "$MODPATH/webroot"
 
 ui_print "- Detected Architecture: $ARCH"
 
-# 2. Extract only the matching arch binaries directly into the module's private
-#    directory. The payload bundles the whole core set (xray, sing-box, tun2socks,
-#    geodat2srs) plus the kasumi-proxy daemon — not just Xray.
+# 1. Extract the arm64 payload directly into the module's private bin/ dir. The
+#    payload bundles the Xray core, the two TUN engines (tun2socks,
+#    hev-socks5-tunnel) and the kasumi-proxy daemon. arm64 only.
 case "$ARCH" in
 arm64)
-	ui_print "- Unpacking proxy cores (xray, sing-box, tun2socks, geodat2srs) for arm64-v8a..."
+	ui_print "- Unpacking xray + tun helpers + daemon for arm64-v8a..."
 	unzip -j -o "$ZIPFILE" "bin/arm64-v8a/*" -d "$MODPATH/bin"
-	;;
-x64)
-	ui_print "- Unpacking proxy cores (xray, sing-box, tun2socks, geodat2srs) for Android-x86_64..."
-	unzip -j -o "$ZIPFILE" "bin/x86_64/*" -d "$MODPATH/bin"
 	;;
 *)
 	ui_print "❌ Unsupported CPU architecture: $ARCH"
-	abort "Unsupported device target!"
+	abort "Kasumi Proxy ships arm64-v8a only."
 	;;
 esac
 
-# 3. Extract the rest of the payload, preserving its layout. The arch bin/ dirs
-#    are skipped — the matching one was flattened into $MODPATH/bin above — as is
-#    the installer's own META-INF/customize.sh. Everything else (scripts,
-#    webroot, …) ships as-is, so adding a payload file needs no change here.
+# 2. Extract the rest of the payload, preserving its layout. The bin/ dir is
+#    skipped — it was flattened into $MODPATH/bin above — as is the installer's
+#    own META-INF/. Everything else (scripts, webroot, …) ships as-is, so adding
+#    a payload file needs no change here.
 ui_print "- Extracting management scripts and Webroot components..."
-unzip -o "$ZIPFILE" -x "bin/arm64-v8a/*" "bin/x86_64/*" "META-INF/*" "customize.sh" -d "$MODPATH/"
+unzip -o "$ZIPFILE" -x "bin/arm64-v8a/*" "META-INF/*" "customize.sh" -d "$MODPATH/"
 
-# 4. Enforce strict executable permissions natively
+# 3. Enforce strict executable permissions natively
 ui_print "- Setting executable permissions..."
 chmod 755 "$MODPATH/bin/"*
 

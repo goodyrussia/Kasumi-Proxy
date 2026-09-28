@@ -6,7 +6,7 @@ import {
   toast as ksuToast,
 } from "kernelsu";
 
-export type RuntimeBridgeMode = "tauri" | "ksu-js" | "web" | "mock";
+export type RuntimeBridgeMode = "ksu-js" | "web" | "mock";
 export type NativeExecResult = { errno: number; stdout: string; stderr: string };
 
 declare global {
@@ -66,10 +66,6 @@ export function hasUrlToken(): boolean {
 }
 
 export function getRuntimeBridgeMode(): RuntimeBridgeMode {
-  // The Tauri desktop webview injects this global — it's the native IPC transport,
-  // not a fallback. Check it first (mirrors pickMode in bridge-provider) so the
-  // diagnostics label reads "tauri", not "mock".
-  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) return "tauri";
   if (hasKsuNativeApi()) return "ksu-js";
   if (hasUrlToken()) return "web";
   return "mock";

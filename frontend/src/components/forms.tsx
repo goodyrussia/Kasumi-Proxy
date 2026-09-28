@@ -65,7 +65,7 @@ export function Segmented<T extends string>({
       {options.map((o) => {
         const val = typeof o === "string" ? o : o.value;
         const raw = typeof o === "string" ? (o === "" ? t("common.none") : o) : o.label;
-        // Non-breaking hyphens keep "sing-box" / "xtls-rprx-vision" whole when a label wraps.
+        // Non-breaking hyphens keep hyphenated labels ("xtls-rprx-vision") whole when they wrap.
         const lab = raw.replace(/-/g, "\u2011");
         const off = disabled || (typeof o === "object" && "disabled" in o && o.disabled);
         return (

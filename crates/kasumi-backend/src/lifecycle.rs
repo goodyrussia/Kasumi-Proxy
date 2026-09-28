@@ -1,31 +1,25 @@
 //! Platform-neutral data-path lifecycle: build and write the active config, spawn
-//! the core and tun2socks, keep sing-box's geo `.srs` rule-sets in step with their
-//! `.dat` sources, inject random tun interface names, and verify the core stayed
-//! up. A `Platform`'s `start_data_path` orchestrates these and wraps its own
+//! the core and the TUN engine that fronts it, and verify the core stayed up.
+//! A `Platform`'s `start_data_path` orchestrates these and wraps its own
 //! OS-specific routing/tun/sysctl around them.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
-use regex::Regex;
 use tokio::process::Child;
 
 use kasumi_core::core_config::CoreConfig;
-use kasumi_core::enums::{CoreEngine, TunEngine};
+use kasumi_core::enums::TunEngine;
 use kasumi_core::hev_config::build_hev_config;
-use kasumi_core::singbox_config::build_singbox_bridge_config;
 use kasumi_core::state::{AppState, DEFAULT_LOCAL_SOCKS_PORT, ProxyMode};
-use kasumi_core::tun2socks_config::build_tun2socks_config;
-// Aliased: `tun` alone would shadow the many `tun: TunEngine` params here.
-use kasumi_core::tun as tun_addr;
 use kasumi_core::tun::TunOptions;
+use kasumi_core::tun2socks_config::build_tun2socks_config;
 
 use crate::commands::{CommandError, build_profile_config};
-use crate::fs::{exists, read_text, remove_file, write_text};
 use crate::fsjson::{read_json, write_text_atomic};
 use crate::platform::{Platform, StartDataPath};
-use crate::proc::{RunOpts, pid_matches_bin, run, spawn_logged};
+use crate::proc::{pid_matches_bin, spawn_logged};
 
 /// Map a hex digit to a consonant so the interface name starts with a letter
 /// (kernel rejects names beginning with a digit).
@@ -57,11 +51,11 @@ pub fn random_tun_iface() -> String {
     format!("{lead}{}", &hex[1..9])
 }
 
-/// Build the config for `profile_id` (else the active profile), write it and the
-/// engine marker, and return the resolved [`StartDataPath`] (engine, TUN engine,
-/// external-engine tuning, SOCKS port, proxy mode) together with the exact
-/// [`CoreConfig`] that was written — the in-memory baseline a running data path
-/// is later diffed against (the on-disk file may be tuned further after start).
+/// Build the config for `profile_id` (else the active profile), write it, and
+/// return the resolved [`StartDataPath`] (TUN engine, engine tuning, SOCKS port,
+/// proxy mode) together with the exact [`CoreConfig`] that was written — the
+/// in-memory baseline a running data path is later diffed against (the on-disk
+/// file may be tuned further after start).
 pub async fn resolve_and_write_config(
     platform: &dyn Platform,
     profile_id: Option<&str>,
@@ -74,18 +68,10 @@ pub async fn resolve_and_write_config(
         .or_else(|| state.as_ref().and_then(|s| s.active_id.clone()))
         .unwrap_or_default();
     let built = build_profile_config(platform, &id).await?;
-    let engine = built.engine;
     let tun = built.tun;
-    let cfg_path = match engine {
-        CoreEngine::SingBox => &paths.singbox_config,
-        CoreEngine::Xray => &paths.xray_config,
-    };
     let cfg_text =
         serde_json::to_string_pretty(&built.config).map_err(|e| CommandError(e.to_string()))?;
-    write_text_atomic(cfg_path, &cfg_text)
-        .await
-        .map_err(|e| CommandError(e.to_string()))?;
-    write_text(&paths.engine_file, engine_label(engine))
+    write_text_atomic(&paths.xray_config, &cfg_text)
         .await
         .map_err(|e| CommandError(e.to_string()))?;
     let settings = state.map(|s| s.settings).unwrap_or_default();
@@ -102,7 +88,6 @@ pub async fn resolve_and_write_config(
     };
     Ok((
         StartDataPath {
-            engine,
             tun,
             tun_opts,
             socks_port,
@@ -112,221 +97,11 @@ pub async fn resolve_and_write_config(
     ))
 }
 
-/// The core engine's on-disk label (written to `paths.engine_file` at config
-/// resolution).
-pub fn engine_label(engine: CoreEngine) -> &'static str {
-    match engine {
-        CoreEngine::Xray => "xray",
-        CoreEngine::SingBox => "sing-box",
-    }
-}
-
-// ---------- geo assets (geodat2srs) ----------
-
-/// Matches a `"path": "…/foo.srs"` value in a config.
-fn srs_path_re() -> Regex {
-    Regex::new(r#""path":\s*"([^"]*\.srs)""#).unwrap()
-}
-
-/// The `.srs` basenames a sing-box config references (e.g. `geosite-ru.srs`).
-pub fn referenced_srs(cfg_text: &str) -> HashSet<String> {
-    let re = srs_path_re();
-    re.captures_iter(cfg_text)
-        .filter_map(|c| c.get(1))
-        .filter_map(|m| m.as_str().rsplit('/').next())
-        .map(str::to_owned)
-        .collect()
-}
-
-async fn list_srs(dir: &Path, prefix: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Ok(mut rd) = tokio::fs::read_dir(dir).await {
-        while let Ok(Some(e)) = rd.next_entry().await {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with(prefix) && name.ends_with(".srs") {
-                out.push(name);
-            }
-        }
-    }
-    out
-}
-
-/// `size-mtime` of `path`, or empty when it can't be stat'd.
-async fn dat_fingerprint(path: &Path) -> String {
-    let Ok(m) = tokio::fs::metadata(path).await else {
-        return String::new();
-    };
-    let mtime = m
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("{}-{}", m.len(), mtime)
-}
-
-/// Keep one geo kind's `.srs` in lock-step with its `.dat`, keeping only the
-/// categories the active config references (geodat2srs emits 2000+; sing-box uses
-/// a handful). Regenerate when the `.dat` changed or a needed `.srs` is missing;
-/// purge when the `.dat` is gone. No-op without the bin.
-pub async fn sync_geo_asset(
-    kind: &str,
-    dat_dir: &Path,
-    srs_dir: &Path,
-    geodat2srs_bin: &Path,
-    needed: &HashSet<String>,
-) {
-    let dat = dat_dir.join(format!("{kind}.dat"));
-    let prefix = format!("{kind}-");
-    let stamp = srs_dir.join(format!(".{kind}.srs.stamp"));
-    remove_file(srs_dir.join(format!(".{kind}.converted"))).await;
-
-    let present = list_srs(srs_dir, &prefix).await;
-    let mut want_with: Vec<&String> = needed.iter().filter(|n| n.starts_with(&prefix)).collect();
-    want_with.sort();
-
-    if !exists(&dat).await {
-        if !present.is_empty() || exists(&stamp).await {
-            for f in &present {
-                remove_file(srs_dir.join(f)).await;
-            }
-            remove_file(&stamp).await;
-        }
-        return;
-    }
-    if !exists(geodat2srs_bin).await {
-        return;
-    }
-
-    // Skip regen only when nothing changed AND every needed .srs is already here.
-    let present_set: HashSet<&String> = present.iter().collect();
-    let have_all = want_with.iter().all(|n| present_set.contains(*n));
-    let fp = dat_fingerprint(&dat).await;
-    let joined = want_with
-        .iter()
-        .map(|s| s.as_str())
-        .collect::<Vec<_>>()
-        .join(",");
-    let stamp_want = format!("{fp}|{joined}");
-    let have = read_text(&stamp)
-        .await
-        .map(|s| s.trim().to_owned())
-        .unwrap_or_default();
-    if !fp.is_empty() && stamp_want == have && have_all {
-        return;
-    }
-
-    let tmp = srs_dir.join(format!(".{kind}.srs.tmp"));
-    let _ = tokio::fs::remove_dir_all(&tmp).await;
-    if tokio::fs::create_dir_all(&tmp).await.is_err() {
-        return;
-    }
-    let argv = vec![
-        geodat2srs_bin.to_string_lossy().into_owned(),
-        kind.to_owned(),
-        "-i".into(),
-        dat.to_string_lossy().into_owned(),
-        "-o".into(),
-        tmp.to_string_lossy().into_owned(),
-        "--prefix".into(),
-        prefix.clone(),
-    ];
-    let ok = run(&argv, RunOpts::default())
-        .await
-        .map(|r| r.code == 0)
-        .unwrap_or(false);
-    if ok {
-        // Replace this prefix's set with exactly the needed files.
-        for f in &present {
-            remove_file(srs_dir.join(f)).await;
-        }
-        if let Ok(mut rd) = tokio::fs::read_dir(&tmp).await {
-            while let Ok(Some(e)) = rd.next_entry().await {
-                let name = e.file_name().to_string_lossy().into_owned();
-                if name.ends_with(".srs") && needed.contains(&name) {
-                    let _ = tokio::fs::rename(tmp.join(&name), srs_dir.join(&name)).await;
-                }
-            }
-        }
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
-        let _ = write_text(&stamp, &stamp_want).await;
-    } else {
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
-        remove_file(&stamp).await;
-    }
-}
-
-/// Local rule_set `.srs` files a sing-box config references but that are missing.
-pub async fn missing_rule_sets(cfg_text: &str) -> Vec<String> {
-    if !cfg_text.contains("\"rule_set\"") {
-        return Vec::new();
-    }
-    let re = srs_path_re();
-    let mut missing = Vec::new();
-    for cap in re.captures_iter(cfg_text) {
-        if let Some(p) = cap.get(1) {
-            let path = p.as_str();
-            if !exists(path).await {
-                missing.push(path.to_owned());
-            }
-        }
-    }
-    missing
-}
-
-// ---------- sing-box tun iface injection ----------
-
-/// Inject random `interface_name`s into the sing-box tun inbounds (stripping any a
-/// prior start added, so re-runs don't stack duplicates) and persist them. The
-/// second name is `None` when there is no force-proxy inbound.
-pub async fn inject_singbox_ifaces(
-    cfg_path: &Path,
-    tun_iface_file: &Path,
-    tun2_iface_file: &Path,
-) -> std::io::Result<(String, Option<String>)> {
-    let raw = read_text(cfg_path).await.unwrap_or_default();
-    let strip = Regex::new(r#", "interface_name": "[^"]*""#).unwrap();
-    let mut text = strip.replace_all(&raw, "").into_owned();
-
-    let tun = read_text(tun_iface_file)
-        .await
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(random_tun_iface);
-    write_text(tun_iface_file, &tun).await?;
-    text = text.replacen(
-        r#""tag": "tun-in""#,
-        &format!(r#""tag": "tun-in", "interface_name": "{tun}""#),
-        1,
-    );
-
-    let tun2 = if text.contains(r#""tag": "tun-force""#) {
-        let t2 = read_text(tun2_iface_file)
-            .await
-            .map(|s| s.trim().to_owned())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(random_tun_iface);
-        write_text(tun2_iface_file, &t2).await?;
-        text = text.replacen(
-            r#""tag": "tun-force""#,
-            &format!(r#""tag": "tun-force", "interface_name": "{t2}""#),
-            1,
-        );
-        Some(t2)
-    } else {
-        remove_file(tun2_iface_file).await;
-        None
-    };
-    write_text(cfg_path, &text).await?;
-    Ok((tun, tun2))
-}
-
-// ---------- core + tun2socks spawn ----------
+// ---------- core + TUN engine spawn ----------
 
 /// The core's argv (`<bin> run -c <cfg>`) and the env it needs (xray reads its geo
 /// `.dat` assets from `XRAY_LOCATION_ASSET`). Split out so a caller that supervises
-/// the spawn itself (e.g. the desktop helper's `PR_SET_PDEATHSIG` path) can reuse the
-/// exact same command without duplicating it.
+/// the spawn itself can reuse the exact same command without duplicating it.
 pub fn core_argv(bin: &str, cfg: &str) -> Vec<String> {
     vec![bin.to_owned(), "run".into(), "-c".into(), cfg.to_owned()]
 }
@@ -335,11 +110,9 @@ pub fn core_env(dat_dir: &str) -> HashMap<String, String> {
     HashMap::from([("XRAY_LOCATION_ASSET".to_owned(), dat_dir.to_owned())])
 }
 
-/// Spawn the selected core (`<bin> run -c <cfg>`), logging to `log_path`. The
-/// caller persists the returned pid to its pidfile. On Unix the child is tied to
-/// its parent via `PR_SET_PDEATHSIG` (see [`proc::spawn_logged`]); capability
-/// grants across exec live process-wide in the helper's ambient set, so no
-/// per-spawn `pre_exec` is needed here.
+/// Spawn the core (`<bin> run -c <cfg>`), logging to `log_path`. The caller
+/// persists the returned pid to its pidfile. On Unix the child is tied to its
+/// parent via `PR_SET_PDEATHSIG` (see [`crate::proc::spawn_logged`]).
 pub async fn spawn_core(
     bin: &str,
     cfg: &str,
@@ -360,11 +133,10 @@ pub async fn spawn_core(
 /// config (device/proxy/tuning — see `build_tun2socks_config`), write it next to
 /// the runtime state, then run `<bin> --config <cfg>`. `fwmark`, when set, marks
 /// tun2socks' own upstream socket so an `ip rule` can keep it out of the tunnel —
-/// a Linux SO_MARK feature. Windows has no fwmark (its server bypass is a host
-/// route), so it passes `None`.
+/// a Linux SO_MARK feature.
 async fn spawn_tun2socks(s: &TunSpawn<'_>) -> std::io::Result<Child> {
     let yaml = build_tun2socks_config(s.iface, s.socks_port, s.fwmark, s.opts);
-    write_text(s.cfg_path, &yaml).await?;
+    crate::fs::write_text(s.cfg_path, &yaml).await?;
     let argv = [
         s.bin.to_owned(),
         "--config".into(),
@@ -376,9 +148,8 @@ async fn spawn_tun2socks(s: &TunSpawn<'_>) -> std::io::Result<Child> {
 /// Everything needed to bring up one external TUN engine, gathered so adding an
 /// engine is a single match arm. `bin` is the engine binary (resolved per-platform);
 /// `cfg_path` is where the engine's rendered config is written; `ipv4`/`ipv6` are
-/// the host addresses a self-addressing engine assigns to the tun it
-/// creates itself; `stack` is the sing-box tun stack (only the sidecar sing-box reads
-/// it); `opts` carries the resolved tuning.
+/// the host addresses a self-addressing engine assigns to the tun it creates
+/// itself; `opts` carries the resolved tuning.
 pub struct TunSpawn<'a> {
     pub bin: &'a str,
     pub iface: &'a str,
@@ -388,20 +159,16 @@ pub struct TunSpawn<'a> {
     pub log_path: &'a Path,
     pub fwmark: Option<u32>,
     pub cfg_path: &'a Path,
-    pub stack: &'a str,
     pub opts: &'a TunOptions,
 }
 
 /// The single place that knows how to launch an external TUN engine. Every shell
-/// (desktop, root daemon) routes its bring-up through here, so adding a new engine
-/// is one more arm — nothing else in the orchestration learns engine specifics.
-/// `SingboxTun` here is a *sidecar* sing-box fronting a non-sing-box core (the
-/// sing-box core owning its own tun is the native path and never reaches this).
+/// routes its bring-up through here, so adding a new engine is one more arm —
+/// nothing else in the orchestration learns engine specifics.
 pub async fn spawn_tun_engine(tun: TunEngine, s: &TunSpawn<'_>) -> std::io::Result<Child> {
     match tun {
         TunEngine::Tun2socks => spawn_tun2socks(s).await,
         TunEngine::Hev => spawn_hev(s).await,
-        TunEngine::SingboxTun => spawn_singbox_bridge(s).await,
     }
 }
 
@@ -409,43 +176,9 @@ pub async fn spawn_tun_engine(tun: TunEngine, s: &TunSpawn<'_>) -> std::io::Resu
 /// next to the runtime state, then run `<hev_bin> <cfg>`.
 async fn spawn_hev(s: &TunSpawn<'_>) -> std::io::Result<Child> {
     let yaml = build_hev_config(s.iface, s.ipv4, s.ipv6, s.socks_port, s.fwmark, s.opts);
-    write_text(s.cfg_path, &yaml).await?;
+    crate::fs::write_text(s.cfg_path, &yaml).await?;
     let argv = [s.bin.to_owned(), s.cfg_path.to_string_lossy().into_owned()];
     spawn_logged(&argv, &std::collections::HashMap::new(), s.log_path, false).await
-}
-
-/// A sidecar sing-box in tun→socks bridge mode (`SingboxTun` on a non-sing-box core):
-/// render its config, write it, then run `<singbox_bin> run -c <cfg>`. Like tun2socks,
-/// it terminates a userspace tun and forwards to the core's SOCKS; the OS routing the
-/// shell installs drives traffic in. Uses sing-box's TUN stack, hence the `stack`.
-async fn spawn_singbox_bridge(s: &TunSpawn<'_>) -> std::io::Result<Child> {
-    // Host address → its CIDR (single-sourced in `kasumi_core::tun`). The shell hands
-    // us the force-proxy tun's address when bringing up the second tun.
-    let ipv4_cidr = if s.ipv4 == tun_addr::TUN2_IPV4 {
-        tun_addr::TUN2_IPV4_CIDR
-    } else {
-        tun_addr::TUN_IPV4_CIDR
-    };
-    let ipv6_cidr = s.ipv6.map(|v6| {
-        if v6 == tun_addr::TUN2_IPV6 {
-            tun_addr::TUN2_IPV6_CIDR
-        } else {
-            tun_addr::TUN_IPV6_CIDR
-        }
-    });
-    let cfg = build_singbox_bridge_config(
-        s.iface,
-        ipv4_cidr,
-        ipv6_cidr,
-        s.socks_port,
-        i64::from(s.opts.mtu),
-        s.stack,
-        &s.opts.log_level,
-    );
-    write_text(s.cfg_path, &cfg).await?;
-    // `sing-box run -c <cfg>`; the bridge config references no geo assets, so no env.
-    let argv = core_argv(s.bin, &s.cfg_path.to_string_lossy());
-    spawn_logged(&argv, &HashMap::new(), s.log_path, false).await
 }
 
 /// Confirm the core stayed up: a bad config makes it exit within ~1s.
@@ -462,6 +195,7 @@ pub async fn verify_core_alive(pid: i32, bin: &str, attempts: u32, delay: Durati
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fs::read_text;
     use crate::fsjson::write_json_atomic;
     use crate::testutil::{TestPlatform, sample_vless};
     use kasumi_core::state::default_app_state;
@@ -475,31 +209,8 @@ mod tests {
         assert!(chars.all(|c| c.is_ascii_hexdigit()));
     }
 
-    #[test]
-    fn referenced_srs_takes_basenames() {
-        let cfg = r#"{"rule_set":[{"path":"/srs/geosite-ru.srs"},{"path":"geoip-ru.srs"}]}"#;
-        let got = referenced_srs(cfg);
-        assert!(got.contains("geosite-ru.srs"));
-        assert!(got.contains("geoip-ru.srs"));
-    }
-
     #[tokio::test]
-    async fn missing_rule_sets_reports_absent_paths() {
-        let dir = tempfile::tempdir().unwrap();
-        let here = dir.path().join("present.srs");
-        std::fs::write(&here, b"x").unwrap();
-        let cfg = format!(
-            r#"{{"rule_set":[{{"path":"{}"}},{{"path":"/no/where/gone.srs"}}]}}"#,
-            here.display()
-        );
-        let missing = missing_rule_sets(&cfg).await;
-        assert_eq!(missing, vec!["/no/where/gone.srs".to_string()]);
-        // No rule_set key → nothing missing.
-        assert!(missing_rule_sets("{}").await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn resolve_and_write_config_writes_engine_and_config() {
+    async fn resolve_and_write_config_writes_the_config() {
         let (p, _d) = TestPlatform::new();
         let prof = sample_vless();
         let id = prof.meta().id.clone();
@@ -515,68 +226,14 @@ mod tests {
 
         // No explicit id → uses active_id.
         let (opts, built) = resolve_and_write_config(&p, None).await.unwrap();
-        assert_eq!(opts.engine, CoreEngine::Xray);
         assert_eq!(opts.tun, TunEngine::Tun2socks);
         assert_eq!(opts.socks_port, 11080);
         // TestPlatform doesn't support proxy modes → always normalized to tun.
         assert_eq!(opts.mode, ProxyMode::Tun);
         // The returned build mirrors what was written.
-        assert_eq!(built.engine, CoreEngine::Xray);
         assert!(built.config["outbounds"].is_array());
-        assert_eq!(
-            read_text(&p.paths().engine_file).await.as_deref(),
-            Some("xray")
-        );
         let cfg = read_text(&p.paths().xray_config).await.unwrap();
         assert!(cfg.contains("outbounds"));
-    }
-
-    #[tokio::test]
-    async fn inject_ifaces_adds_and_persists() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = dir.path().join("sb.json");
-        let f1 = dir.path().join("tun1");
-        let f2 = dir.path().join("tun2");
-        // The written config is pretty-printed, so tags carry a space after the colon.
-        std::fs::write(
-            &cfg,
-            r#"{ "inbounds": [{ "type": "tun", "tag": "tun-in" }, { "type": "tun", "tag": "tun-force" }] }"#,
-        )
-        .unwrap();
-        let (tun, tun2) = inject_singbox_ifaces(&cfg, &f1, &f2).await.unwrap();
-        assert!(tun2.is_some());
-        let text = read_text(&cfg).await.unwrap();
-        assert!(text.contains(&format!(r#""interface_name": "{tun}""#)));
-        assert!(text.contains(&format!(r#""interface_name": "{}""#, tun2.unwrap())));
-        assert_eq!(read_text(&f1).await.as_deref(), Some(tun.as_str()));
-
-        // Re-running reuses the persisted names and doesn't stack duplicates.
-        let (tun_again, _) = inject_singbox_ifaces(&cfg, &f1, &f2).await.unwrap();
-        assert_eq!(tun_again, tun);
-        let text2 = read_text(&cfg).await.unwrap();
-        assert_eq!(text2.matches(r#""interface_name""#).count(), 2);
-    }
-
-    #[tokio::test]
-    async fn inject_ifaces_without_force_clears_tun2() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = dir.path().join("sb.json");
-        let f1 = dir.path().join("tun1");
-        let f2 = dir.path().join("tun2");
-        // A stale tun2 name from a prior force-proxy run must be cleared when the
-        // config no longer has a force-proxy inbound.
-        std::fs::write(&f2, b"stale").unwrap();
-        std::fs::write(
-            &cfg,
-            r#"{ "inbounds": [{ "type": "tun", "tag": "tun-in" }] }"#,
-        )
-        .unwrap();
-        let (tun, tun2) = inject_singbox_ifaces(&cfg, &f1, &f2).await.unwrap();
-        assert!(tun2.is_none());
-        assert!(!exists(&f2).await);
-        let text = read_text(&cfg).await.unwrap();
-        assert_eq!(text.matches(r#""interface_name""#).count(), 1);
-        assert!(text.contains(&format!(r#""interface_name": "{tun}""#)));
     }
 
     #[tokio::test]

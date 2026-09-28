@@ -38,7 +38,7 @@ impl Service {
         // it with the latest connectivity probe: a running core that actually reaches
         // the internet is Connected; one that can't is NoInternet; before the first
         // probe lands it stays Connecting.
-        if service.state == RunState::Connecting && service.engine.is_some() {
+        if service.state == RunState::Connecting {
             match &*self.connectivity.lock().unwrap() {
                 Connectivity::Reachable => service.state = RunState::Connected,
                 Connectivity::Unreachable(reason) => {
@@ -51,12 +51,11 @@ impl Service {
         let active_id = read_json::<AppState>(&self.platform.paths().app_state)
             .await
             .and_then(|s| s.active_id);
-        let core = match service.engine {
-            Some(kasumi_core::enums::CoreEngine::Xray) => self.cores.xray.clone(),
-            Some(kasumi_core::enums::CoreEngine::SingBox) => self.cores.singbox.clone(),
-            None => None,
-        }
-        .unwrap_or_default();
+        let core = if service.state == RunState::Stopped {
+            String::new()
+        } else {
+            self.cores.xray.clone().unwrap_or_default()
+        };
         Some(ServiceStatus {
             service,
             active_id,

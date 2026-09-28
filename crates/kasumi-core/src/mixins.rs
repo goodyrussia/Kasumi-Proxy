@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::enums::{CoreEngine, Fingerprint, HeaderType, Network, Security};
+use crate::enums::{Fingerprint, HeaderType, Network, Security};
 
 /// Identity / bookkeeping fields every profile carries (`metaShape`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
@@ -15,12 +15,6 @@ pub struct Meta {
     pub id: String,
     pub remarks: String,
     pub group_id: String,
-    /// Owning subscription id, or `null` for a manually added profile.
-    #[serde(default)]
-    pub sub_id: Option<String>,
-    /// Per-profile core override; `None` resolves by protocol/settings.
-    #[serde(default)]
-    pub core_type: Option<CoreEngine>,
     /// Profile this one dials its server through (a proxy chain, see
     /// [`crate::chain`]); `None` connects directly.
     #[serde(default)]
@@ -72,16 +66,6 @@ pub struct GrpcTransport {
     pub user_agent: String,
 }
 
-/// HTTP/2 transport (sing-box only).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, specta::Type)]
-#[serde(rename_all = "camelCase", default)]
-pub struct H2Transport {
-    pub host: String,
-    pub path: String,
-    pub idle_timeout: i64,
-    pub ping_timeout: i64,
-}
-
 /// HTTPUpgrade transport.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, specta::Type)]
 #[serde(rename_all = "camelCase", default)]
@@ -117,13 +101,6 @@ pub struct KcpTransport {
     pub max_sending_window: i64,
 }
 
-/// Raw QUIC transport.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, specta::Type)]
-#[serde(rename_all = "camelCase", default)]
-pub struct QuicTransport {
-    pub header_type: HeaderType,
-}
-
 /// Stream transport, tagged on `kind` — each variant carries only the knobs its
 /// network actually uses (instead of one flat struct with ~28 mostly-unused
 /// fields). Mux is an outbound concern, so it lives on the protocol, not here.
@@ -133,11 +110,9 @@ pub enum Transport {
     Tcp(TcpTransport),
     Ws(WsTransport),
     Grpc(GrpcTransport),
-    H2(H2Transport),
     Httpupgrade(HttpUpgradeTransport),
     Xhttp(XhttpTransport),
     Kcp(KcpTransport),
-    Quic(QuicTransport),
 }
 
 impl Default for Transport {
@@ -153,11 +128,9 @@ impl Transport {
             Transport::Tcp(_) => Network::Tcp,
             Transport::Ws(_) => Network::Ws,
             Transport::Grpc(_) => Network::Grpc,
-            Transport::H2(_) => Network::H2,
             Transport::Httpupgrade(_) => Network::Httpupgrade,
             Transport::Xhttp(_) => Network::Xhttp,
             Transport::Kcp(_) => Network::Kcp,
-            Transport::Quic(_) => Network::Quic,
         }
     }
 
@@ -166,10 +139,9 @@ impl Transport {
         match self {
             Transport::Tcp(t) => &t.host,
             Transport::Ws(t) => &t.host,
-            Transport::H2(t) => &t.host,
             Transport::Httpupgrade(t) => &t.host,
             Transport::Xhttp(t) => &t.host,
-            Transport::Grpc(_) | Transport::Kcp(_) | Transport::Quic(_) => "",
+            Transport::Grpc(_) | Transport::Kcp(_) => "",
         }
     }
 
@@ -178,11 +150,10 @@ impl Transport {
         match self {
             Transport::Tcp(t) => &t.path,
             Transport::Ws(t) => &t.path,
-            Transport::H2(t) => &t.path,
             Transport::Httpupgrade(t) => &t.path,
             Transport::Xhttp(t) => &t.path,
             Transport::Grpc(t) => &t.service_name,
-            Transport::Kcp(_) | Transport::Quic(_) => "",
+            Transport::Kcp(_) => "",
         }
     }
 
@@ -199,7 +170,6 @@ impl Transport {
         match self {
             Transport::Tcp(t) => t.header_type,
             Transport::Kcp(t) => t.header_type,
-            Transport::Quic(t) => t.header_type,
             _ => HeaderType::None,
         }
     }
@@ -291,12 +261,11 @@ mod tests {
     fn meta_camel_case_and_nullable() {
         let m: Meta =
             serde_json::from_str(r#"{"id":"a","remarks":"Home","groupId":"g-main"}"#).unwrap();
-        assert_eq!(m.sub_id, None);
-        assert_eq!(m.core_type, None);
+        assert_eq!(m.via, None);
         let v = serde_json::to_value(&m).unwrap();
         assert_eq!(v["groupId"], "g-main");
-        assert!(v["coreType"].is_null());
-        assert!(v["subId"].is_null());
+        assert!(v.get("coreType").is_none());
+        assert!(v.get("subId").is_none());
     }
 
     #[test]

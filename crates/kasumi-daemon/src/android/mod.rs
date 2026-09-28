@@ -1,6 +1,6 @@
 //! Android (Magisk/KernelSU/APatch) `Platform`: the OS-specific half of the
-//! data-path. Neutral lifecycle steps (config build, geo sync, sing-box iface
-//! injection, core/tun2socks spawn, liveness verify) come from `kasumi-backend`;
+//! data-path. Neutral lifecycle steps (config build, geo sync, iface injection,
+//! core/tun2socks spawn, liveness verify) come from `kasumi-backend`;
 //! this owns routing ([`routing`]), sysctl locks ([`sysctl`]), `/dev/net/tun`, and
 //! the per-uid app filter ([`platform`]).
 

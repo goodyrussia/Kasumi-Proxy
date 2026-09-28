@@ -16,7 +16,6 @@ import { copyText } from "../profiles/clipboard";
 const LOG_TARGET_LABEL = {
   daemon: "logs.target.daemon",
   xray: "logs.target.xray",
-  singbox: "logs.target.singbox",
   "tun-engine": "logs.target.tunEngine",
 } as const satisfies Record<LogTarget, string>;
 

@@ -5,38 +5,36 @@
 <h1 align="center">Kasumi Proxy</h1>
 
 <p align="center">
-  System-wide transparent proxy on Xray-core / sing-box for <b>rooted Android</b>, <b>Linux</b> and <b>Windows</b>.
+  System-wide transparent proxy on <b>Xray-core</b> for <b>rooted Android</b> (Magisk / KernelSU / APatch).
 </p>
 
 <p align="center">
-  <a href="https://github.com/loss-and-quick/Kasumi-Proxy/actions/workflows/ci.yml"><img src="https://github.com/loss-and-quick/Kasumi-Proxy/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://github.com/loss-and-quick/Kasumi-Proxy/releases/latest"><img src="https://img.shields.io/github/v/release/loss-and-quick/Kasumi-Proxy?sort=semver" alt="Latest release" /></a>
-  <a href="https://github.com/loss-and-quick/Kasumi-Proxy/issues"><img src="https://img.shields.io/github/issues/loss-and-quick/Kasumi-Proxy" alt="Open issues" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/loss-and-quick/Kasumi-Proxy" alt="License: GPL v3" /></a>
+  <a href="https://github.com/goodyrussia/Kasumi-Proxy/actions/workflows/ci.yml"><img src="https://github.com/goodyrussia/Kasumi-Proxy/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/goodyrussia/Kasumi-Proxy/releases/latest"><img src="https://img.shields.io/github/v/release/goodyrussia/Kasumi-Proxy?sort=semver" alt="Latest release" /></a>
+  <a href="https://github.com/goodyrussia/Kasumi-Proxy/issues"><img src="https://img.shields.io/github/issues/goodyrussia/Kasumi-Proxy" alt="Open issues" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/goodyrussia/Kasumi-Proxy" alt="License: GPL v3" /></a>
 </p>
 
-- **Android:** a Magisk / KernelSU / APatch module. It runs the core as a root daemon and routes
-  traffic with `iptables` / `ip rule`, not through `VpnService`.
-- **Desktop:** a Tauri 2 app that brings up a real TUN. Proxy-only, system-proxy and PAC modes
-  are also available.
-
-Both run the same Rust backend and the same React UI.
+- A Magisk / KernelSU / APatch **module** for arm64 devices. It runs the Xray core as a root
+  daemon and routes traffic with `iptables` / `ip rule`, not through `VpnService`.
 
 > [!NOTE]
-> This is a fork of [vincentng295/Magic_V2Ray](https://github.com/vincentng295/Magic_V2Ray). Most
-> of the code was written by AI, so review it before you trust it.
+> This is a fork of [loss-and-quick/Kasumi-Proxy](https://github.com/loss-and-quick/Kasumi-Proxy)
+> (itself a fork of [vincentng295/Magic_V2Ray](https://github.com/vincentng295/Magic_V2Ray)),
+> trimmed to the Android module and the Xray core only: sing-box, the desktop (Tauri) app,
+> subscriptions and the non-Xray protocols were removed. Most of the code was written by AI,
+> so review it before you trust it.
 
 ## Features
 
-- **Two cores.** Xray-core and sing-box, picked per profile. Supported protocols are VLESS, VMess,
-  Trojan, Shadowsocks, SOCKS, HTTP, WireGuard, Hysteria2, TUIC, AnyTLS, Naive and ShadowTLS.
-- **Import.** Subscription URLs, share links, mixed text and QR codes.
-- **Subscriptions.** Groups of servers that can be updated in one tap, or in the background
-  with no UI open.
+- **One core: Xray-core** (the [eichgee fork](https://github.com/eichgee/Xray-core), pinned and
+  built from source). Protocols: VLESS, VMess, Trojan, Shadowsocks, SOCKS, HTTP, WireGuard and
+  custom JSON outbounds — each with its transports (TCP, WS, gRPC, HTTPUpgrade, XHTTP, mKCP),
+  TLS / REALITY / XTLS.
+- **Import.** Share links (`vless://`, `vmess://`, `trojan://`, …) and QR codes.
 - **Honest status.** An end-to-end probe tells *connected* apart from *no internet* and *failed*.
 - **Diagnostics.** TCP ping, real ping and a speed test for each profile.
-- **Per-app routing** on Android, plus a choice of TUN engine: tun2socks, hev-socks5-tunnel or
-  sing-box.
+- **Per-app routing** on Android, plus a choice of TUN engine: tun2socks or hev-socks5-tunnel.
 
 ### Why a root module rather than a VPN app?
 
@@ -52,43 +50,22 @@ Both run the same Rust backend and the same React UI.
 
 ## Install
 
-Download the file for your platform from the
-[latest release](https://github.com/loss-and-quick/Kasumi-Proxy/releases/latest).
+Download the latest `kasumi-proxy-module-vX.Y.Z.zip` from the
+[releases page](https://github.com/goodyrussia/Kasumi-Proxy/releases/latest), flash it in
+Magisk / KernelSU / APatch, then reboot. Open the UI with the module's **Action** button or its
+WebUI entry.
 
-| Platform | File | Notes |
-| --- | --- | --- |
-| Android (root) | `kasumi-proxy-module-vX.Y.Z.zip` | Flash it in Magisk / KernelSU / APatch, then reboot. Open the UI with the module's **Action** button or its WebUI entry. |
-| Linux | `.deb`, `.AppImage` | Asks for `pkexec` / `sudo` to set up the TUN and routes. |
-| Linux, portable | `kasumi-proxy-linux-portable-vX.Y.Z.zip` | Unzip and run `./kasumi-desktop`. All state stays next to the binary. |
-| Windows | `-setup.exe`, `.msi` | Needs administrator rights (UAC) for the TUN. |
-| Windows, portable | `kasumi-proxy-windows-portable-vX.Y.Z.zip` | Unzip and run `kasumi-desktop.exe`. |
-| Nix / NixOS | — | See [docs/nix.md](docs/nix.md). |
-
-On Android, state and logs live in `/data/adb/kasumi-proxy/`.
-
-<details>
-<summary><b>Verifying the AppImage signature</b></summary>
-
-AppImages are signed with the key in [`release-signing-key.asc`](release-signing-key.asc)
-(`2AA0 03A9 D670 653C FAA8  F7B0 88BE 4761 6D49 65E9`):
-
-```sh
-gpg --import release-signing-key.asc
-./Kasumi*.AppImage --appimage-extract '.appimage_signature'
-gpg --verify squashfs-root/.appimage_signature Kasumi*.AppImage
-```
-
-</details>
+State and logs live in `/data/adb/kasumi-proxy/`.
 
 ## Development
 
-Build steps, checks and the repository layout are in [CONTRIBUTING.md](CONTRIBUTING.md). Nix is
-optional: plain `cargo` and `bun` are enough.
+Build steps, checks and the repository layout are in [CONTRIBUTING.md](CONTRIBUTING.md). Plain
+`cargo` and `bun` are enough; CI runs the same steps.
 
 ## Acknowledgments
 
 Kasumi Proxy ships prebuilt binaries from
-[Xray-core](https://github.com/XTLS/Xray-core), [sing-box](https://github.com/SagerNet/sing-box),
+[eichgee/Xray-core](https://github.com/eichgee/Xray-core) (built from source at the pinned tag),
 [tun2socks](https://github.com/xjasonlyu/tun2socks) and
 [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel). See
 [module/bin/README.md](module/bin/README.md) for their licenses.

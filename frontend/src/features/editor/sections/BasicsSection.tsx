@@ -1,6 +1,6 @@
-import { Field, SectionLabel, Segmented, Select } from "../../../components";
-import type { CoreEngine, Profile, Protocol } from "../../../generated/bindings";
-import { CORE_ENGINE_OPTS, PROTOCOL_OPTS } from "../../../generated/defaults";
+import { Field, SectionLabel, Select } from "../../../components";
+import type { Profile, Protocol } from "../../../generated/bindings";
+import { PROTOCOL_OPTS } from "../../../generated/defaults";
 import { useT } from "../../../i18n";
 import type { EndpointSetter, FieldErrors, MetaSetter } from "../types";
 
@@ -12,16 +12,8 @@ const PROTOCOL_LABELS: Record<Protocol, string> = {
   socks: "SOCKS",
   http: "HTTP",
   wireguard: "WireGuard",
-  hysteria2: "Hysteria2",
-  tuic: "TUIC",
-  anytls: "AnyTLS",
-  naive: "Naive",
-  shadowtls: "ShadowTLS",
   custom: "Custom config",
 };
-
-// UI sentinel for "resolve by protocol/global settings" (nested `coreType` is null).
-const CORE_SEL = ["global", ...CORE_ENGINE_OPTS] as const;
 
 // UI sentinel for "connect directly" (nested `via` is null).
 const VIA_DIRECT = "";
@@ -34,8 +26,6 @@ export function BasicsSection({
   groupOpts,
   viaOpts,
   changeProtocol,
-  engineForced,
-  engineHint,
 }: {
   draft: Profile;
   setMeta: MetaSetter;
@@ -44,11 +34,8 @@ export function BasicsSection({
   groupOpts: Array<{ value: string; label: string }>;
   viaOpts: Array<{ value: string; label: string }>;
   changeProtocol: (proto: Protocol) => void;
-  engineForced: CoreEngine | null;
-  engineHint: string;
 }) {
   const t = useT();
-  const coreValue: (typeof CORE_SEL)[number] = engineForced ?? draft.meta.coreType ?? "global";
 
   return (
     <>
@@ -106,22 +93,6 @@ export function BasicsSection({
           hint={t("editor.viaHint")}
         />
       )}
-
-      {/* When the profile is forced onto one engine, pin the selector to that
-          engine (not "global" or a stale stored choice) and disable it. */}
-      <Segmented
-        label={t("editor.engine")}
-        value={coreValue}
-        disabled={engineForced != null}
-        options={CORE_SEL.map((option) => ({
-          value: option,
-          label: option === "global" ? t("editor.engineGlobal") : option,
-        }))}
-        onChange={(value) =>
-          setMeta({ coreType: value === "global" ? null : (value as CoreEngine) })
-        }
-        hint={engineHint}
-      />
     </>
   );
 }

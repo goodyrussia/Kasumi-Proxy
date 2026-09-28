@@ -4,18 +4,14 @@ import { useT } from "../../../i18n";
 export function DiagnosticsSection({
   bridgeMode,
   xrayVersion,
-  singboxVersion,
   tun,
   profilesCount,
-  subscriptionsCount,
   activeId,
 }: {
   bridgeMode: string;
   xrayVersion: string;
-  singboxVersion: string;
   tun: boolean;
   profilesCount: number;
-  subscriptionsCount: number;
   activeId: string | null;
 }) {
   const t = useT();
@@ -28,21 +24,11 @@ export function DiagnosticsSection({
         <ListRow icon="link" title={t("settings.bridge")} sub={bridgeMode} />
         <ListRow icon="bolt" title={t("settings.xrayVersion")} sub={xrayVersion || notInstalled} />
         <ListRow
-          icon="bolt"
-          title={t("settings.singboxVersion")}
-          sub={singboxVersion || notInstalled}
-        />
-        <ListRow
           icon="shield_moon"
           title={t("settings.tun")}
           sub={tun ? t("common.available") : t("common.unavailable")}
         />
         <ListRow icon="dns" title={t("settings.profiles")} sub={`${profilesCount}`} />
-        <ListRow
-          icon="cloud_sync"
-          title={t("settings.subscriptions")}
-          sub={`${subscriptionsCount}`}
-        />
         <ListRow
           icon="bookmark"
           title={t("settings.activeProfile")}

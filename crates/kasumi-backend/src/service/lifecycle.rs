@@ -7,7 +7,6 @@ use kasumi_core::core_config::{CoreConfig, MutationEffect, mutation_effect};
 use kasumi_core::state::{AppState, DEFAULT_LOCAL_SOCKS_PORT, ProxyMode};
 
 use crate::commands::{self, CommandError, Response};
-use crate::fs::read_text;
 use crate::fsjson::read_json;
 use crate::lifecycle::resolve_and_write_config;
 use crate::platform::StopDataPath;
@@ -53,7 +52,7 @@ impl Service {
                 let (opts, built) = resolve_and_write_config(&*self.platform, id.as_deref())
                     .await
                     .map_err(|e| e.0)?;
-                let (mode, engine, socks_port) = (opts.mode, opts.engine, opts.socks_port);
+                let (mode, socks_port) = (opts.mode, opts.socks_port);
                 if let Err(e) = self.platform.start_data_path(opts).await {
                     // A failed bring-up must not leave a previously-set OS proxy
                     // pointing at a dead port.
@@ -63,7 +62,7 @@ impl Service {
                 }
                 // With the data-path up, align the OS proxy with the mode (set for
                 // system/pac, cleared otherwise — covers mode switches).
-                self.platform.set_os_proxy(mode, engine, socks_port).await;
+                self.platform.set_os_proxy(mode, socks_port).await;
                 self.note_data_path_started(built, mode);
                 self.settle_pending_restart().await;
                 Ok(())
@@ -78,36 +77,9 @@ impl Service {
                     .map_err(|e| e.to_string())
             }
             LifecycleCmd::ReloadAppFilter => {
-                // xray reloads per-uid rules live; sing-box bakes them into the
-                // config and needs a full restart.
-                let engine = read_text(&self.platform.paths().engine_file)
-                    .await
-                    .map(|s| s.trim().to_owned())
-                    .unwrap_or_default();
-                if engine == "sing-box" {
-                    self.platform
-                        .stop_data_path(StopDataPath {
-                            keep_service_state: true,
-                        })
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    self.note_data_path_stopped();
-                    let (opts, built) = resolve_and_write_config(&*self.platform, None)
-                        .await
-                        .map_err(|e| e.0)?;
-                    let mode = opts.mode;
-                    match self.platform.start_data_path(opts).await {
-                        Ok(()) => {
-                            self.note_data_path_started(built, mode);
-                            self.settle_pending_restart().await;
-                            Ok(())
-                        }
-                        Err(e) => {
-                            self.note_data_path_stopped();
-                            Err(e.to_string())
-                        }
-                    }
-                } else if let Some(f) = self.platform.app_filter() {
+                // xray reloads per-uid rules live; the platform's app filter (when
+                // present) re-applies them without a restart.
+                if let Some(f) = self.platform.app_filter() {
                     f.reload_app_filter().await.map_err(|e| e.to_string())
                 } else {
                     Ok(())
@@ -170,9 +142,7 @@ impl Service {
                     .settings
                     .local_socks_port
                     .unwrap_or(DEFAULT_LOCAL_SOCKS_PORT);
-                self.platform
-                    .set_os_proxy(mode, next_cfg.engine, socks_port)
-                    .await;
+                self.platform.set_os_proxy(mode, socks_port).await;
                 if let Some(running) = self.running_config.lock().unwrap().as_mut() {
                     running.1 = mode;
                 }

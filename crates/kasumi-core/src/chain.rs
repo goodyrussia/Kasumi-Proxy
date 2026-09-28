@@ -1,8 +1,8 @@
 //! Proxy chains: a profile can dial its server through another profile
 //! ([`crate::mixins::Meta::via`]), which can itself dial through a third, and so
 //! on. The config builders turn each link into the core's own mechanism —
-//! sing-box `detour`, xray `sockopt.dialerProxy` — so the first hop in the list is
-//! the only server the device connects to directly.
+//! xray `sockopt.dialerProxy` — so the first hop in the list is the only server
+//! the device connects to directly.
 
 use crate::profile::Profile;
 use crate::state::AppState;

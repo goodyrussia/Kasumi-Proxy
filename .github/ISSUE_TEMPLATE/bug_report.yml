@@ -5,10 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for the report! Kasumi Proxy runs on **rooted Android** (a
-        Magisk / KernelSU / APatch module) and on **Linux / Windows desktop** (a
-        Tauri app). Please fill in the environment fields — most issues are
-        platform, root-method, or core specific.
+        Thanks for the report! Kasumi Proxy runs on **rooted Android** as a
+        Magisk / KernelSU / APatch module. Please fill in the environment
+        fields — most issues are device, root-method, or core specific.
 
   - type: checkboxes
     id: preflight
@@ -26,9 +25,7 @@ body:
       label: Platform
       options:
         - Android (root module)
-        - Linux desktop (Tauri app)
-        - Windows desktop (Tauri app)
-        - Not platform-specific (build / CI / UI)
+        - Not device-specific (build / CI / UI)
     validations:
       required: true
 
@@ -41,7 +38,6 @@ body:
         - Web UI (frontend)
         - Proxy core / backend
         - Build / CI / release
-        - Nix / packaging
         - Documentation
         - Other / not sure
     validations:
@@ -60,17 +56,16 @@ body:
     id: os
     attributes:
       label: OS / device
-      description: Android → version + device/ROM; Linux → distro + desktop/compositor (X11/Wayland); Windows → edition + build.
-      placeholder: "Android 14 — Pixel 7 (stock)  ·  NixOS — Hyprland (Wayland)  ·  Windows 11 23H2"
+      description: Android version + device/ROM (root solution in the next field).
+      placeholder: "Android 16 — Poco F6 (HyperOS)"
     validations:
       required: true
 
   - type: dropdown
     id: root
     attributes:
-      label: Root solution (Android only)
+      label: Root solution
       options:
-        - "N/A — Linux / Windows desktop"
         - Magisk
         - KernelSU
         - APatch
@@ -82,11 +77,9 @@ body:
     id: core
     attributes:
       label: Affected core
-      description: Which engine runs the failing profile? (Xray for VLESS/VMess/Trojan/SS/SOCKS/HTTP/WireGuard, sing-box for Hysteria2/TUIC)
+      description: Which engine runs the failing profile? (Xray for VLESS/VMess/Trojan/SS/SOCKS/HTTP/WireGuard)
       options:
         - Xray-core
-        - sing-box
-        - Both / not sure
         - "N/A — not a proxying issue (UI, build, etc.)"
     validations:
       required: true

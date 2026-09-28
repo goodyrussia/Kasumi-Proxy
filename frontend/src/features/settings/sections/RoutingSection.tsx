@@ -15,7 +15,6 @@ import {
 import type { RoutingRule } from "../../../generated/bindings";
 import { useFormatters, useT } from "../../../i18n";
 import type { AdvancedSettings } from "../../../lib/bridge";
-import { getRuntimeBridgeMode } from "../../../lib/ksu-webui";
 import { isCatchAllRule, isRedundantCatchAll, ruleIcon, ruleSummary } from "../helpers";
 import { makePresetRule, RULE_PRESETS } from "../rule-presets";
 
@@ -50,8 +49,6 @@ export function RoutingSection({
 }) {
   const t = useT();
   const formatters = useFormatters();
-  // Proxy-mode selection is desktop-only — the Android root module is always tun.
-  const isDesktop = getRuntimeBridgeMode() === "tauri";
   const profileName = (tag: string) => profiles.find((p) => p.id === tag)?.remarks;
   const catchAllIndex = routingRules.findIndex(isCatchAllRule);
   const catchAllRedundant = isRedundantCatchAll(routingRules, catchAllIndex);
@@ -66,21 +63,6 @@ export function RoutingSection({
   return (
     <>
       <Card style={{ padding: "4px 14px", marginTop: 8 }}>
-        {isDesktop && (
-          <SettingRow stacked title={t("settings.proxyMode")} hint={t("settings.proxyModeHint")}>
-            <Segmented
-              ariaLabel={t("settings.proxyMode")}
-              value={settings.proxyMode}
-              onChange={(v) => set("proxyMode", v)}
-              options={[
-                { value: "tun", label: t("settings.proxyModeTun") },
-                { value: "proxy-only", label: t("settings.proxyModeProxyOnly") },
-                { value: "system", label: t("settings.proxyModeSystem") },
-                { value: "pac", label: t("settings.proxyModePac") },
-              ]}
-            />
-          </SettingRow>
-        )}
         <SettingRow stacked title={t("settings.routingMode")}>
           <Segmented
             ariaLabel={t("settings.routingMode")}
@@ -219,19 +201,6 @@ export function RoutingSection({
                 { value: "AsIs", label: t("settings.domainStrategy4Xray.AsIs") },
                 { value: "IPIfNonMatch", label: t("settings.domainStrategy4Xray.IPIfNonMatch") },
                 { value: "IPOnDemand", label: t("settings.domainStrategy4Xray.IPOnDemand") },
-              ]}
-            />
-          </SettingRow>
-          <SettingRow stacked title={t("settings.domainStrategy4Singbox")}>
-            <Segmented
-              ariaLabel={t("settings.domainStrategy4Singbox")}
-              value={settings.domainStrategy4Singbox}
-              onChange={(value) => set("domainStrategy4Singbox", value)}
-              options={[
-                { value: "prefer_ipv4", label: t("settings.domainStrategy4Singbox.prefer_ipv4") },
-                { value: "prefer_ipv6", label: t("settings.domainStrategy4Singbox.prefer_ipv6") },
-                { value: "ipv4_only", label: t("settings.domainStrategy4Singbox.ipv4_only") },
-                { value: "ipv6_only", label: t("settings.domainStrategy4Singbox.ipv6_only") },
               ]}
             />
           </SettingRow>

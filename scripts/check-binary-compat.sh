@@ -1,31 +1,41 @@
 #!/usr/bin/env bash
 # ============================================================
 # scripts/check-binary-compat.sh
-# Stage the desktop cores and run the config-validation harness against them, so a
-# core version whose config schema drifted from our generators (a config the core
-# now rejects) fails loudly. Used two ways:
-#   - release.yml gates the auto-bump on it: a core bump that needs generator
-#     changes blocks the release instead of shipping a broken build.
-#   - core-compat.yml runs it on a schedule against the LATEST upstream cores for
-#     early warning (opens a tracking issue) before the bump ever happens.
+# Run the config-validation harness against the REAL pinned Xray core: every
+# config our generators emit is fed to `xray run -test`, so a core whose config
+# schema drifted from the generators (a config the core now rejects) fails
+# loudly instead of shipping in a module.
 #
-# Versions come from scripts/binary-versions.sh; override the ones under test with
-# the usual env vars, e.g.
-#   XRAY_VERSION=v26.4.0 SINGBOX_VERSION=v1.14.0 scripts/check-binary-compat.sh
+# Used two ways:
+#   - CI (ci.yml, release.yml) gates on it, so a bad core pin never ships.
+#   - Locally: run it after bumping XRAY_TAG/XRAY_ZIP_SHA256 in
+#     scripts/binary-versions.sh.
 #
-# Usage:
-#   scripts/check-binary-compat.sh [target-triple]   # default: host triple
+# The core under test is compiled for the host (linux) from the pinned source —
+# the harness runs it locally, not on-device. Override the pin via the usual env
+# vars (XRAY_TAG, XRAY_ZIP_SHA256, …) to test a candidate core.
+#
+# Usage: scripts/check-binary-compat.sh
 # ============================================================
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Stage xray / sing-box / tun2socks / libcronet for the target (honours the
-# XRAY_VERSION / SINGBOX_VERSION / TUN2SOCKS_VERSION overrides via binary-versions.sh).
-"$ROOT/scripts/fetch-binaries.sh" desktop "${1:-}"
+XRAY_BIN="${XRAY_BIN:-$ROOT/.cache/xray-bin/xray-linux-$([ "$(uname -m)" = "aarch64" ] && echo arm64 || echo amd64)}"
 
-# Run the harness with the staged cores present (it auto-detects them under
-# src-tauri/binaries and validates every generated config against the real cores).
-# A rejected config fails the test — and therefore this script.
+# Build the pinned core for the host unless a prebuilt one is supplied.
+if [ ! -x "$XRAY_BIN" ]; then
+	case "$(uname -m)" in
+	aarch64) GOARCH_ARG=arm64 ;;
+	*) GOARCH_ARG=amd64 ;;
+	esac
+	bash "$ROOT/scripts/build-xray.sh" linux "$GOARCH_ARG" "$XRAY_BIN"
+fi
+
+# The harness (crates/kasumi-core/tests/core_validation.rs) validates every
+# generated config against the core at $KASUMI_XRAY_BIN and fails on the first
+# rejection.
+export KASUMI_XRAY_BIN="$XRAY_BIN"
+echo "→ validating generated configs against $("$XRAY_BIN" version | head -n1)"
 cargo test --manifest-path "$ROOT/Cargo.toml" \
 	-p kasumi-core --test core_validation -- --nocapture

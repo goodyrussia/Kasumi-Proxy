@@ -5,7 +5,6 @@ import { createBridge, type Dispatch, type PushStreams } from "../dispatch-bridg
 
 const noPush: PushStreams = {
   subscribeStatus: () => () => {},
-  subscribeSubApplied: () => () => {},
   subscribeAssetsUpdated: () => () => {},
 };
 
@@ -96,32 +95,6 @@ describe("dispatch-bridge batch diagnostics", () => {
   });
 });
 
-describe("dispatch-bridge core resolution", () => {
-  it("resolveCores ships the profiles and unwraps the typed reply", async () => {
-    const profiles = [endpointProfile("a"), endpointProfile("b")];
-    const dispatch: Dispatch = vi.fn(async (cmd) => {
-      if (cmd.cmd === "resolveCores") {
-        expect(cmd.profiles).toHaveLength(2);
-        return {
-          kind: "coreResolutions",
-          value: [
-            { resolved: "xray", forced: null },
-            { resolved: "sing-box", forced: "sing-box" },
-          ],
-        } as Response_Serialize;
-      }
-      throw new Error(`unexpected command ${cmd.cmd}`);
-    });
-    const bridge = createBridge(dispatch, noPush);
-
-    const out = await bridge.resolveCores(profiles as unknown as Profile[]);
-    expect(out).toEqual([
-      { resolved: "xray", forced: null },
-      { resolved: "sing-box", forced: "sing-box" },
-    ]);
-  });
-});
-
 describe("dispatch-bridge chain candidates", () => {
   it("chainCandidates ships the draft and unwraps the id list", async () => {
     const draft = endpointProfile("draft");
@@ -144,7 +117,6 @@ describe("dispatch-bridge status stream", () => {
     uploadBytes: 0,
     downloadBytes: 0,
     uptimeSec: 1,
-    engine: "xray",
     activeId: "p1",
     core: "Xray 1.0",
     ...extra,
@@ -157,7 +129,6 @@ describe("dispatch-bridge status stream", () => {
         pushStatus = cb;
         return () => {};
       },
-      subscribeSubApplied: () => () => {},
       subscribeAssetsUpdated: () => () => {},
     };
     // The status command replies with the bare ServiceState — no pendingRestart —
@@ -171,7 +142,6 @@ describe("dispatch-bridge status stream", () => {
             uploadBytes: 0,
             downloadBytes: 0,
             uptimeSec: 1,
-            engine: "xray",
           },
         } as Response_Serialize;
       }

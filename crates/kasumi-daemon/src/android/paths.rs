@@ -1,6 +1,6 @@
 //! Android (Magisk/KernelSU/APatch) on-disk layout and OS binaries. Neutral
-//! primitives (fs, pid/process, tun-name, geo-sync, core spawn) live in
-//! `kasumi-backend`; this is only the module-specific paths.
+//! primitives (fs, pid/process, tun-name, core spawn) live in `kasumi-backend`;
+//! this is only the module-specific paths.
 
 use std::path::PathBuf;
 
@@ -18,15 +18,13 @@ pub const PIDFILE: &str = "/data/adb/kasumi-proxy/run/core.pid";
 pub const TUN2SOCKS_PIDFILE: &str = "/data/adb/kasumi-proxy/run/tun2socks.pid";
 pub const TUN2SOCKS2_PIDFILE: &str = "/data/adb/kasumi-proxy/run/tun2socks2.pid";
 
-pub const ENGINE_FILE: &str = "/data/adb/kasumi-proxy/engine";
 pub const TUN_IFACE_FILE: &str = "/data/adb/kasumi-proxy/tun-iface";
 pub const TUN2_IFACE_FILE: &str = "/data/adb/kasumi-proxy/tun2-iface";
-/// The single persisted record of the running data-path (run state, engine, TUN
+/// The single persisted record of the running data-path (run state, TUN
 /// selection, socks port, start time), written by the daemon in the run dir.
 pub const DATA_PATH_STATE_FILE: &str = "/data/adb/kasumi-proxy/run/data-path.json";
 
 pub const XRAY_BIN: &str = "/data/adb/modules/kasumi-proxy/bin/xray";
-pub const SINGBOX_BIN: &str = "/data/adb/modules/kasumi-proxy/bin/sing-box";
 pub const TUN2SOCKS_BIN: &str = "/data/adb/modules/kasumi-proxy/bin/tun2socks";
 pub const HEV_BIN: &str = "/data/adb/modules/kasumi-proxy/bin/hev-socks5-tunnel";
 /// hev writes its generated YAML here (and a second one for the force-proxy tun).
@@ -35,13 +33,6 @@ pub const HEV2_CONFIG: &str = "/data/adb/kasumi-proxy/run/hev2.yml";
 /// tun2socks writes its generated YAML here (and a second one for the force-proxy tun).
 pub const TUN2SOCKS_CONFIG: &str = "/data/adb/kasumi-proxy/run/tun2socks.yml";
 pub const TUN2SOCKS2_CONFIG: &str = "/data/adb/kasumi-proxy/run/tun2socks2.yml";
-/// The sidecar sing-box (SingboxTun engine on a non-sing-box core) writes its
-/// generated bridge JSON here (and a second one for the force-proxy tun).
-pub const SINGBOX_BRIDGE_CONFIG: &str = "/data/adb/kasumi-proxy/run/singbox-bridge.json";
-pub const SINGBOX_BRIDGE2_CONFIG: &str = "/data/adb/kasumi-proxy/run/singbox-bridge2.json";
-pub const GEODAT2SRS_BIN: &str = "/data/adb/modules/kasumi-proxy/bin/geodat2srs";
-/// Core binaries a running pid may match.
-pub const CORE_BINS: [&str; 2] = [XRAY_BIN, SINGBOX_BIN];
 
 pub const IP: &str = "/system/bin/ip";
 pub const IPTABLES: &str = "/system/bin/iptables";
@@ -52,13 +43,10 @@ pub fn backend_paths() -> BackendPaths {
     let d = PathBuf::from(DATADIR);
     BackendPaths {
         data_dir: d.clone(),
-        srs_dir: d.clone(),
         dat_dir: d.clone(),
         app_state: d.join("app-state.json"),
         profiles: d.join("profiles.json"),
         xray_config: d.join("config.json"),
-        singbox_config: d.join("singbox.json"),
-        engine_file: PathBuf::from(ENGINE_FILE),
         run_dir: PathBuf::from(RUN_DIR),
         ws_info: PathBuf::from(RUN_DIR).join("ws.json"),
         // The KSU manager renders this bundle natively; the daemon also serves it

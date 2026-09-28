@@ -14,13 +14,10 @@ import type {
   AssetFile,
   AssetsUpdatedEvent,
   Capabilities,
-  CoreResolution,
   MutationIntent,
   ResourceUpdateMode,
   RoutingRule,
   ServiceStatus,
-  SubAppliedEvent,
-  Subscription,
 } from "../lib/bridge";
 import { isServiceUp } from "../lib/bridge";
 import { bridge } from "../lib/bridge-provider";
@@ -59,10 +56,6 @@ interface Store extends AppState {
   pinging: Set<string>; // profile ids currently being pinged
   speedTesting: Set<string>; // profile ids currently being speed-tested
   testResults: Record<string, ProfileTest>; // last ping/speed per profile id (ephemeral)
-  // Which core each profile runs on, resolved by the backend (`resolveCores`) and
-  // keyed by profile id. Refreshed whenever profiles/settings change; the UI reads
-  // it instead of re-implementing the resolution matrix.
-  coreResolutions: Record<string, CoreResolution>;
   toasts: ToastItem[];
   recentActivity: ActivityEvent[];
   recentProfileIds: string[]; // most-recently-activated first, for the tray quick-switch
@@ -97,12 +90,6 @@ interface Store extends AppState {
   renameGroup: (id: string, name: string) => Promise<void>;
   removeGroup: (id: string) => Promise<void>;
   reorderGroups: (from: number, to: number) => Promise<void>;
-
-  // subscriptions
-  upsertSub: (s: Subscription) => Promise<void>;
-  removeSub: (id: string) => Promise<void>;
-  updateSub: (id: string) => Promise<void>;
-  updateAllSubs: () => Promise<void>;
 
   // routing rules
   addRoutingRule: (rule: RoutingRule) => Promise<void>;
@@ -139,22 +126,9 @@ export const useAppStore = create<Store>((set, get) => {
     ...s.testResults,
     [id]: { ...(s.testResults[id] ?? { ping: null, speed: null }), ...patch },
   });
-  // Re-resolve every profile's core through the backend and adopt the answer.
-  // Fire-and-forget: the engine tags render/refresh once the reply lands.
-  const refreshCoreResolutions = (profiles: Profile[]) => {
-    bridge
-      .resolveCores(profiles)
-      .then((rs) =>
-        set({
-          coreResolutions: Object.fromEntries(profiles.map((p, i) => [p.meta.id, rs[i]])),
-        }),
-      )
-      .catch(() => {});
-  };
   // Adopt the canonical persisted-state slice the backend returned (the rest of
   // the store — service status, toasts, etc. — is UI-only and left untouched).
   const applyState = (next: AppState) => {
-    refreshCoreResolutions(next.profiles);
     set((s) => {
       // testResults is keyed by id and lives only here; drop entries for profiles
       // that no longer exist so the map can't grow without bound (cheap no-op when
@@ -167,7 +141,6 @@ export const useAppStore = create<Store>((set, get) => {
       return {
         profiles: next.profiles,
         groups: next.groups,
-        subscriptions: next.subscriptions,
         routingRules: next.routingRules,
         assetFiles: next.assetFiles,
         settings: mergeSettings(next.settings),
@@ -214,31 +187,9 @@ export const useAppStore = create<Store>((set, get) => {
     const pendingRestart = service.pendingRestart && !get().busy;
     set({ service: { ...service, pendingRestart }, uploadRate, downloadRate });
   };
-  // The daemon fetched & applied a subscription headlessly (it owns the restart
-  // decision too) — re-read the persisted state so the UI reflects the new
-  // profiles. Safe to overwrite in-memory data: every user mutation writes
-  // through immediately, so at most an in-flight edit races this.
-  const onDaemonSubApplied = async (info: SubAppliedEvent) => {
-    try {
-      const state = await bridge.readState();
-      set({
-        profiles: state.profiles,
-        groups: state.groups,
-        subscriptions: state.subscriptions,
-        routingRules: state.routingRules,
-        assetFiles: state.assetFiles,
-        settings: mergeSettings(state.settings),
-        activeId: state.activeId,
-      });
-      refreshCoreResolutions(state.profiles);
-    } catch {
-      return;
-    }
-    pushActivity("cloud_sync", translateCurrent("activity.subUpdated", { name: info.remarks }));
-  };
   // The daemon refreshed the geo assets headlessly: it stamped each asset's
   // `lastUpdated` and may have restarted the core, so re-read the persisted state
-  // the same way a headless sub-apply does.
+  // the same way every other daemon push does.
   const onDaemonAssetsUpdated = async (info: AssetsUpdatedEvent) => {
     try {
       const state = await bridge.readState();
@@ -293,7 +244,6 @@ export const useAppStore = create<Store>((set, get) => {
   return {
     profiles: [],
     groups: [],
-    subscriptions: [],
     routingRules: [],
     assetFiles: [],
     settings: EMPTY_SETTINGS,
@@ -303,7 +253,6 @@ export const useAppStore = create<Store>((set, get) => {
     pinging: new Set<string>(),
     speedTesting: new Set<string>(),
     testResults: {},
-    coreResolutions: {},
     toasts: [],
     recentActivity: [],
     recentProfileIds: [],
@@ -317,30 +266,24 @@ export const useAppStore = create<Store>((set, get) => {
       downloadBytes: 0,
       uptimeSec: 0,
       core: "",
-      engine: null,
       pendingRestart: false,
     },
 
     async hydrate() {
       const state = await bridge.readState();
       const needsMigration = !state.version;
-      const subscriptions = needsMigration
-        ? state.subscriptions.map((s) => ({ ...s, interval: s.interval * 60 }))
-        : state.subscriptions;
       // Base group, legacy default assets and a dangling active_id are normalized by
       // the backend read path now; the frontend just renders what it returns.
       const assetFiles0 = state.assetFiles;
       const settings = mergeSettings(state.settings);
       set({
         ...state,
-        subscriptions,
         assetFiles: assetFiles0,
         settings,
         version: __MODULE_VERSION__,
         hydrated: true,
         recentProfileIds: state.activeId ? [state.activeId] : [],
       });
-      refreshCoreResolutions(state.profiles);
       // Status/caps first — fast and needed for UI responsiveness.
       bridge.onStatus((service) => syncService(service));
       try {
@@ -378,18 +321,16 @@ export const useAppStore = create<Store>((set, get) => {
           // phase the intent wants, which the backend re-stamps on write.
           state: {
             ...state,
-            subscriptions,
             assetFiles,
             settings,
             version: __MODULE_VERSION__,
           } as AppState_Serialize,
         });
       }
-      // The daemon fetches subscriptions and geo assets headlessly; reload the
-      // persisted state whenever it pushes about one.
+      // The daemon refreshes geo assets headlessly; reload the persisted state
+      // whenever it pushes about one.
       if (!daemonPushWatchStarted) {
         daemonPushWatchStarted = true;
-        bridge.onSubApplied((info) => void onDaemonSubApplied(info));
         bridge.onAssetsUpdated((info) => void onDaemonAssetsUpdated(info));
       }
     },
@@ -702,69 +643,6 @@ export const useAppStore = create<Store>((set, get) => {
       await mutate({ kind: "removeGroup", id });
     },
 
-    async upsertSub(sub) {
-      // The daemon's auto-update loop re-reads state every tick, so a new or
-      // edited subscription is picked up within a minute — no wakeup needed.
-      await mutate({ kind: "upsertSub", subscription: sub });
-    },
-    async removeSub(id) {
-      const { profiles, activeId } = get();
-      const activeProfile = profiles.find((p) => p.meta.id === activeId);
-      if (activeProfile?.meta.subId === id)
-        await stopServiceIfRunning(translateCurrent("store.service.stoppedSubRemoved"));
-      await mutate({ kind: "removeSub", id });
-    },
-    async updateSub(id) {
-      const { subscriptions, service } = get();
-      const sub = subscriptions.find((x) => x.id === id);
-      if (!sub) return;
-
-      // "proxy" mode can only fetch through a live core — guard it client-side so
-      // the failure is explained up front rather than as a fetch timeout (the
-      // backend can't tell a stopped proxy from an unreachable URL).
-      if (sub.updateMode === "proxy" && !isServiceUp(service.state)) {
-        await mutate({
-          kind: "upsertSub",
-          subscription: { ...sub, lastError: translateCurrent("common.proxyNotRunning") },
-        });
-        get().notify(translateCurrent("common.proxyNotRunning"));
-        return;
-      }
-
-      get().notify(translateCurrent("store.sub.updating", { name: sub.remarks }));
-      let next: AppState;
-      try {
-        // The backend fetches, maps, dedups, applies, persists, and restarts the
-        // active data-path when affected; we just reflect the result.
-        next = await bridge.applySubscription(id);
-      } catch (e: unknown) {
-        await mutate({ kind: "upsertSub", subscription: { ...sub, lastError: errorMessage(e) } });
-        get().notify(translateCurrent("store.sub.updateFailed", { name: sub.remarks }));
-        return;
-      }
-
-      applyState(next);
-      await get().refreshStatus();
-
-      const updated = next.subscriptions.find((x) => x.id === id);
-      if (updated?.lastError) {
-        get().notify(translateCurrent("store.sub.updateFailed", { name: sub.remarks }));
-        return;
-      }
-      get().notify(
-        translateCurrent("store.sub.updatedProfiles", {
-          count: updated?.count ?? 0,
-          name: sub.remarks,
-        }),
-      );
-      pushActivity("cloud_sync", translateCurrent("activity.subUpdated", { name: sub.remarks }));
-    },
-    async updateAllSubs() {
-      for (const sub of get().subscriptions.filter((s) => s.enabled)) {
-        await get().updateSub(sub.id);
-      }
-    },
-
     addRoutingRule(rule) {
       return mutate({ kind: "upsertRoutingRule", rule });
     },
@@ -871,4 +749,4 @@ export const useAppStore = create<Store>((set, get) => {
   };
 });
 
-export type StoreProfile = Profile & { subId: string | null };
+export type StoreProfile = Profile;

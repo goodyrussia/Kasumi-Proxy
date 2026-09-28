@@ -11,29 +11,25 @@ export function SecuritySection({
   errors,
   isTls,
   isReality,
-  isQuic,
 }: {
   tls: Tls;
   setTls: TlsSetter;
   errors: FieldErrors;
   isTls: boolean;
   isReality: boolean;
-  isQuic: boolean;
 }) {
   const t = useT();
 
   return (
     <>
       <SectionLabel>{t("editor.security")}</SectionLabel>
-      {!isQuic && (
-        <Segmented
-          label={t("editor.tlsSecurity")}
-          value={tls.security ?? "none"}
-          options={SECURITY_OPTS}
-          onChange={(value) => setTls({ security: value as Security })}
-        />
-      )}
-      {(isTls || isReality || isQuic) && (
+      <Segmented
+        label={t("editor.tlsSecurity")}
+        value={tls.security ?? "none"}
+        options={SECURITY_OPTS}
+        onChange={(value) => setTls({ security: value as Security })}
+      />
+      {(isTls || isReality) && (
         <>
           <Field
             label={t("editor.sni")}

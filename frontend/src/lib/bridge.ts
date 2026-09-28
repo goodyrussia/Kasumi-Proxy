@@ -9,12 +9,10 @@
 import type {
   AssetsUpdatedEvent,
   Capabilities,
-  CoreResolution,
   FetchMode,
   LogTarget,
   Profile,
   RunState,
-  SubAppliedEvent,
   TestKind,
   ServiceStatus as WireServiceStatus,
 } from "../generated/bindings";
@@ -27,13 +25,10 @@ export type {
   AssetFile,
   AssetsUpdatedEvent,
   Capabilities,
-  CoreResolution,
   Group,
   LogTarget,
   MutationIntent_Serialize as MutationIntent,
   RoutingRule,
-  SubAppliedEvent,
-  Subscription_Serialize as Subscription,
   TestKind,
 } from "../generated/bindings";
 
@@ -109,24 +104,8 @@ export interface Bridge {
   // `replaceState` / `importBackup` intents — there is no separate writeState.
   mutate(intent: MutationIntent_Serialize): Promise<AppState>;
 
-  // subscriptions
-  fetchSubscription(
-    url: string,
-    opts?: { userAgent?: string; allowInsecure?: boolean; mode?: ResourceUpdateMode },
-  ): Promise<Profile[]>;
-
-  // Fetch one subscription and apply it server-side (fetch + map + dedup + apply,
-  // restarting the active data-path when affected), returning the new persisted
-  // state. Soft failures are recorded as the subscription's `lastError` in the
-  // returned state; the UI reloads from it instead of running the apply locally.
-  applySubscription(subId: string): Promise<AppState>;
-
-  // The daemon fetches & applies auto-update subscriptions itself; this stream
-  // tells the UI to reload the persisted state. Returns an unsubscribe.
-  onSubApplied(cb: (info: SubAppliedEvent) => void): () => void;
-
-  // Same, for the headless geo-asset refresh: it stamps each asset's `lastUpdated`
-  // (and may restart the core), so the UI reloads. Returns an unsubscribe.
+  // The headless geo-asset refresh stamps each asset's `lastUpdated` (and may
+  // restart the core), so the UI reloads. Returns an unsubscribe.
   onAssetsUpdated(cb: (info: AssetsUpdatedEvent) => void): () => void;
 
   // asset files
@@ -139,18 +118,13 @@ export interface Bridge {
   listApps(): Promise<AppEntry[]>;
   reloadAppFilter(): Promise<{ ok: boolean; error?: string }>;
 
-  // Which core each profile runs on (and its capability force), resolved by the
-  // backend's `core::resolve_core` — the UI renders the answer instead of
-  // re-implementing the resolution matrix. Batch: one call per profile list.
-  resolveCores(profiles: Profile[]): Promise<CoreResolution[]>;
-
   // Ids of the stored profiles `profile` (possibly an unsaved draft) can dial
   // through, checked by the backend's `chain::chain_candidates` — the same rule
   // the config builders enforce, so the UI never re-implements chain validity.
   chainCandidates(profile: Profile): Promise<string[]>;
 
   // import / export / backup
-  parseShareLinks(text: string): Promise<Profile[]>; // vless:// vmess:// trojan://
+  parseShareLinks(text: string): Promise<Profile[]>; // vless:// vmess:// trojan:// …
   buildShareLink(p: Profile): Promise<string>;
   exportBackup(): Promise<Blob>;
   importBackup(file: Blob, mode: "merge" | "replace"): Promise<void>;
@@ -178,7 +152,6 @@ export function parseServiceStatus(value: unknown): ServiceStatus {
     downloadBytes: typeof s.downloadBytes === "number" ? s.downloadBytes : 0,
     uptimeSec: typeof s.uptimeSec === "number" ? s.uptimeSec : 0,
     core: typeof s.core === "string" ? s.core : "",
-    engine: s.engine === "xray" || s.engine === "sing-box" ? s.engine : null,
     pendingRestart: s.pendingRestart === true,
   };
 }
@@ -189,7 +162,6 @@ export function parseCapabilities(value: unknown): Capabilities {
   return {
     bridge: typeof s.bridge === "string" ? s.bridge : "",
     xrayVersion: typeof s.xrayVersion === "string" ? s.xrayVersion : "",
-    singboxVersion: typeof s.singboxVersion === "string" ? s.singboxVersion : "",
     tun: s.tun === true || s.tun === 1 || s.tun === "1",
   };
 }

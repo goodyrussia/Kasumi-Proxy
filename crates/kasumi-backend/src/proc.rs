@@ -128,8 +128,7 @@ pub async fn read_pidfile(path: impl AsRef<Path>) -> i32 {
 }
 
 /// Kill `pid` (when it still matches `bin`, or unconditionally if `bin` is `None`)
-/// and drop its pidfile. With `graceful`, give a tun-managing core (sing-box
-/// auto_route) a window to tear down its own routing + tun device before a hard
+/// and drop its pidfile. With `graceful`, allow a window to tear down before a hard
 /// kill — on POSIX that's SIGTERM-then-SIGKILL; on Windows there is no SIGTERM, so
 /// it's a `TerminateProcess` and the wintun driver reclaims the adapter on exit.
 pub async fn kill_if_running(
@@ -152,9 +151,9 @@ pub async fn kill_if_running(
 /// Tie a spawned data-path process (the core / tun2socks) to the helper that is its
 /// parent: `PR_SET_PDEATHSIG(SIGTERM)` makes the kernel SIGTERM the child the instant
 /// the helper dies — including an *unclean* exit (crash / SIGKILL) where no teardown
-/// code can run. SIGTERM (not KILL) lets sing-box remove its own tun + auto_route on
-/// the way out, so an orphaned core can't strand a tun / routes and leave
-/// `service-state` reporting "stopped" while traffic is still captured. The
+/// code can run. SIGTERM (not KILL) lets the child clean up on the way out, so an
+/// orphaned core can't strand a tun / routes and leave `service-state` reporting
+/// "stopped" while traffic is still captured. The
 /// `getppid() == 1` guard closes the fork→prctl race: if the helper already died
 /// (child reparented to init), PDEATHSIG would never fire, so exit rather than exec
 /// an unsupervised core.
@@ -224,7 +223,7 @@ fn build_logged_command(
 /// `kill_on_drop` ties the OS process lifetime to the returned [`Child`] handle:
 /// for ephemeral diagnostic cores (ping/speed) the handle may be dropped by a
 /// cancelled future — e.g. the client's WS frame is dropped mid-test — and
-/// without this the `sing-box` would leak and pile up. Long-running supervised
+/// without this the child would leak and pile up. Long-running supervised
 /// processes (the active core, tun2socks) pass `false`: their pid is persisted
 /// and they must outlive the spawning scope.
 pub async fn spawn_logged(
@@ -281,7 +280,7 @@ mod imp {
             }
         }
         send_signal(pid, libc::SIGKILL);
-        // Wait for the pid to actually vanish before returning: a sing-box auto_route
+        // Wait for the pid to actually vanish before returning: a tun-managing
         // core still owns its tun + routing rules until it's reaped, and the caller
         // (stop_data_path) spawns the next core as soon as we return — overlapping tuns
         // wedge routing. Bounded so a stuck/unreapable pid can't hang the stop path.

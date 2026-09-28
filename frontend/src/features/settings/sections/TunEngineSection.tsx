@@ -9,51 +9,34 @@ import {
   SettingRow,
   Switch,
 } from "../../../components";
-import type {
-  AdvancedSettings_Serialize,
-  CoreEngine,
-  TunEngine,
-} from "../../../generated/bindings";
+import type { AdvancedSettings_Serialize, TunEngine } from "../../../generated/bindings";
 import {
-  CORE_ENGINE_OPTS,
-  TUN_BY_CORE,
+  TUN_ENGINE_OPTS,
   TUN_KNOBS_BY_ENGINE,
   type TunKnobSpec,
 } from "../../../generated/defaults";
 import { type DictKey, useT } from "../../../i18n";
 import type { AdvancedSettings } from "../../../lib/bridge";
 
-// Display labels for the TUN engines. Presentation only; the selectable engines,
-// per-core defaults and validity all come from the generated `TUN_BY_CORE`
-// (single-sourced from Rust `resolve_tun`/`default_tun_for`), so a new engine
-// variant surfaces here as a missing-key type error rather than silent omission.
+// Display labels for the TUN engines. Presentation only; the selectable engines
+// and their settings come from the generated `TUN_ENGINE_OPTS`/`TUN_KNOBS_BY_ENGINE`
+// (single-sourced from Rust), so a new engine variant surfaces here as a
+// missing-key type error rather than silent omission.
 const ENGINE_LABEL: Record<TunEngine, string> = {
-  "singbox-tun": "sing-box TUN",
   tun2socks: "tun2socks",
-  hev: "hev",
+  hev: "hev-socks5-tunnel",
 };
 
 // Labels for engine settings fields. Which fields an engine reads, and how each is
 // edited, comes from Rust (`TUN_KNOBS_BY_ENGINE`); this only names them. A field
 // without a label here still renders, under its raw name.
 const KNOB_LABEL: Partial<Record<keyof AdvancedSettings_Serialize, DictKey>> = {
-  singboxStack: "settings.singboxStack",
   tunConnectTimeoutMs: "settings.tunConnectTimeout",
   tunTcpRwTimeoutMs: "settings.tunTcpRwTimeout",
   tunUdpRwTimeoutMs: "settings.tunUdpRwTimeout",
   tunTcpBufferSize: "settings.tunTcpBuffer",
   tunUdpRecvBufferSize: "settings.tunUdpRecvBuffer",
 };
-
-// Display names for choice values that are proper names; others show as-is.
-const OPTION_LABEL: Record<string, string> = {
-  gvisor: "gVisor",
-  system: "System",
-  mixed: "Mixed",
-};
-
-// Every engine any core can use, in first-seen order (the settings list order).
-const ENGINES: TunEngine[] = [...new Set(CORE_ENGINE_OPTS.flatMap((c) => TUN_BY_CORE[c].valid))];
 
 export function TunEngineSection({
   settings,
@@ -64,41 +47,22 @@ export function TunEngineSection({
 }) {
   const t = useT();
 
-  const tunFor = (core: CoreEngine): TunEngine =>
-    settings.tunByCore?.[core] ?? TUN_BY_CORE[core].default;
-  const setTunFor = (core: CoreEngine, value: TunEngine) =>
-    set("tunByCore", { ...(settings.tunByCore ?? {}), [core]: value });
-
-  // Settings of the engines actually in use, each field once, with the engines
-  // that read it (tun2socks and hev share the UDP timeout and TCP buffer).
-  const inUse = ENGINES.filter((engine) =>
-    CORE_ENGINE_OPTS.some((core) => tunFor(core) === engine),
-  );
-  const knobs: { spec: TunKnobSpec; engines: TunEngine[] }[] = [];
-  for (const engine of inUse) {
-    for (const spec of TUN_KNOBS_BY_ENGINE[engine]) {
-      const seen = knobs.find((k) => k.spec.field === spec.field);
-      if (seen) seen.engines.push(engine);
-      else knobs.push({ spec, engines: [engine] });
-    }
-  }
+  const engine = settings.tunEngine;
+  const knobs: TunKnobSpec[] = TUN_KNOBS_BY_ENGINE[engine] ?? [];
   const excludeCount = (settings.tunExcludeAddresses ?? "").split(/[\s,]+/).filter(Boolean).length;
 
   return (
     <>
       <SectionLabel>{t("settings.tunEngine")}</SectionLabel>
       <Card style={{ padding: "4px 14px" }}>
-        {CORE_ENGINE_OPTS.map((core) => (
-          <SettingRow key={core} title={core}>
-            <Select
-              style={{ width: 160 }}
-              value={tunFor(core)}
-              disabled={TUN_BY_CORE[core].valid.length < 2}
-              onChange={(v) => setTunFor(core, v)}
-              options={TUN_BY_CORE[core].valid.map((e) => ({ value: e, label: ENGINE_LABEL[e] }))}
-            />
-          </SettingRow>
-        ))}
+        <SettingRow title={t("settings.tunEngine")}>
+          <Select
+            style={{ width: 170 }}
+            value={engine}
+            onChange={(v) => set("tunEngine", v)}
+            options={TUN_ENGINE_OPTS.map((e) => ({ value: e, label: ENGINE_LABEL[e] }))}
+          />
+        </SettingRow>
         <div className="hint" style={{ padding: "4px 0 10px" }}>
           {t("settings.tunEngineHint")}
         </div>
@@ -107,14 +71,8 @@ export function TunEngineSection({
             <div className="field-label" style={{ margin: "4px 0 0" }}>
               {t("settings.tunEngineSettings")}
             </div>
-            {knobs.map(({ spec, engines }) => (
-              <TunKnobRow
-                key={spec.field}
-                spec={spec}
-                hint={engines.map((e) => ENGINE_LABEL[e]).join(" · ")}
-                settings={settings}
-                set={set}
-              />
+            {knobs.map((spec) => (
+              <TunKnobRow key={spec.field} spec={spec} settings={settings} set={set} />
             ))}
           </div>
         )}
@@ -160,12 +118,10 @@ export function TunEngineSection({
 /** One engine setting, rendered from its Rust-side description. */
 function TunKnobRow({
   spec,
-  hint,
   settings,
   set,
 }: {
   spec: TunKnobSpec;
-  hint: string;
   settings: AdvancedSettings;
   set: <K extends keyof AdvancedSettings>(key: K, value: AdvancedSettings[K]) => void;
 }) {
@@ -179,14 +135,14 @@ function TunKnobRow({
     set(spec.field as keyof AdvancedSettings, value as never);
 
   return (
-    <SettingRow title={label} hint={hint}>
+    <SettingRow title={label}>
       {spec.kind === "choice" ? (
         <Segmented
           size="sm"
           ariaLabel={label}
           value={String(current ?? "")}
           onChange={write}
-          options={spec.options.map((o) => ({ value: o, label: OPTION_LABEL[o] ?? o }))}
+          options={spec.options.map((o) => ({ value: o, label: o }))}
         />
       ) : (
         <input

@@ -7,11 +7,9 @@ import { lazy, Suspense, useMemo, useState } from "react";
 import { Btn, Field, SectionLabel, Sheet } from "../../components";
 import { AppStateSchema } from "../../generated/schemas";
 import { useT } from "../../i18n";
-import { nativeDialogsAvailable, openTextFile, saveTextFile } from "../../lib/native-dialog";
+import { pickTextFile } from "../../lib/file-picker";
 import { useAppStore } from "../../store/useAppStore";
 import { copyText } from "../profiles/clipboard";
-
-const JSON_FILTER = [{ name: "JSON", extensions: ["json"] }];
 
 const QrCodeSheet = lazy(() =>
   import("../../components/QrCodeSheet").then((module) => ({ default: module.QrCodeSheet })),
@@ -22,7 +20,7 @@ const QrScannerSheet = lazy(() =>
 
 export default function Backup({ onClose }: { onClose: () => void }) {
   const groups = useAppStore((s) => s.groups);
-  const subscriptions = useAppStore((s) => s.subscriptions);
+  const profiles = useAppStore((s) => s.profiles);
   const settings = useAppStore((s) => s.settings);
   const activeId = useAppStore((s) => s.activeId);
   const importBackup = useAppStore((s) => s.importBackup);
@@ -30,8 +28,8 @@ export default function Backup({ onClose }: { onClose: () => void }) {
   const t = useT();
 
   const backupJson = useMemo(
-    () => JSON.stringify({ groups, subscriptions, settings, activeId }, null, 2),
-    [groups, subscriptions, settings, activeId],
+    () => JSON.stringify({ groups, profiles, settings, activeId }, null, 2),
+    [groups, profiles, settings, activeId],
   );
   const [importText, setImportText] = useState("");
   const [qrOpen, setQrOpen] = useState(false);
@@ -47,7 +45,6 @@ export default function Backup({ onClose }: { onClose: () => void }) {
             hint: t("backup.summary", {
               groups: data.groups?.length ?? 0,
               profiles: data.profiles?.length ?? 0,
-              subscriptions: data.subscriptions?.length ?? 0,
             }),
           }
         : { ok: false as const, hint: t("backup.invalidStructure") };
@@ -67,7 +64,7 @@ export default function Backup({ onClose }: { onClose: () => void }) {
         mono
         hint={t("backup.summary", {
           groups: groups.length,
-          subscriptions: subscriptions.length,
+          profiles: profiles.length,
         })}
       />
       <div style={{ display: "flex", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
@@ -84,20 +81,8 @@ export default function Backup({ onClose }: { onClose: () => void }) {
         </Btn>
         <Btn
           variant="outline"
-          onClick={async () => {
+          onClick={() => {
             const name = `kasumi-proxy-backup-${new Date().toISOString().slice(0, 10)}.json`;
-            if (nativeDialogsAvailable()) {
-              try {
-                await saveTextFile({
-                  contents: backupJson,
-                  defaultName: name,
-                  filters: JSON_FILTER,
-                });
-              } catch (e) {
-                notify(e instanceof Error ? e.message : String(e));
-              }
-              return;
-            }
             const blob = new Blob([backupJson], { type: "application/json" });
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
@@ -121,22 +106,16 @@ export default function Backup({ onClose }: { onClose: () => void }) {
         hint={importValidation.hint}
       />
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-        {nativeDialogsAvailable() && (
-          <Btn
-            variant="outline"
-            icon="folder_open"
-            onClick={async () => {
-              try {
-                const text = await openTextFile({ filters: JSON_FILTER });
-                if (text !== null) setImportText(text);
-              } catch (e) {
-                notify(e instanceof Error ? e.message : String(e));
-              }
-            }}
-          >
-            {t("common.openFile")}
-          </Btn>
-        )}
+        <Btn
+          variant="outline"
+          icon="folder_open"
+          onClick={async () => {
+            const text = await pickTextFile();
+            if (text !== null) setImportText(text);
+          }}
+        >
+          {t("common.openFile")}
+        </Btn>
         <Btn variant="outline" icon="qr_code_scanner" onClick={() => setScannerOpen(true)}>
           {t("backup.scanQr")}
         </Btn>

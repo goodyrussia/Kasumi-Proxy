@@ -13,10 +13,6 @@ export const ProtoTag = ({ protocol }: { protocol: string }) => (
   <span className={`tag ${protocol}`}>{protocol}</span>
 );
 
-export const EngineTag = ({ engine }: { engine: string }) => (
-  <span className={`tag engine-${engine}`}>{engine}</span>
-);
-
 export function pingClass(v: number | null) {
   return v == null
     ? "ping-na"

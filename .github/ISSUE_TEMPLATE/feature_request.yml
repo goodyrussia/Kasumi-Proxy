@@ -15,12 +15,10 @@ body:
     attributes:
       label: Area
       options:
-        - Web UI / desktop UI (frontend)
-        - Data path / routing (Android module or Linux desktop)
-        - Desktop app (Tauri — tray, autostart, packaging)
+        - Web UI (frontend)
+        - Data path / routing (Android module)
         - Protocols / config generation
         - Build / release / CI
-        - Nix / packaging
         - Other
     validations:
       required: true

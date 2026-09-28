@@ -1,4 +1,4 @@
-//! The `Profile` discriminated union (13 protocols).
+//! The `Profile` discriminated union (8 protocols).
 //!
 //! Internally tagged on `"protocol"`; each variant nests the shared field groups
 //! it uses ([`Meta`]/[`Endpoint`]/[`Transport`]/[`Tls`]) as sub-objects plus its
@@ -8,7 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::enums::{CongestionControl, Flow, Hysteria2Obfs, PacketEncoding, SsMethod, VmessEnc};
+use crate::enums::{Flow, PacketEncoding, SsMethod, VmessEnc};
 use crate::mixins::{Endpoint, Meta, Tls, Transport};
 
 // ---- non-trivial field defaults (match the Zod `.default(...)`) ----
@@ -25,14 +25,8 @@ fn wg_local_address() -> String {
 fn wg_mtu() -> i64 {
     1420
 }
-fn shadowtls_version() -> i64 {
-    3
-}
 fn ss_method_default() -> SsMethod {
     SsMethod::Aes256Gcm
-}
-fn congestion_bbr() -> CongestionControl {
-    CongestionControl::Bbr
 }
 
 /// The set of supported protocols (the union's discriminant values).
@@ -59,11 +53,6 @@ pub enum Protocol {
     Socks,
     Http,
     Wireguard,
-    Hysteria2,
-    Tuic,
-    Anytls,
-    Naive,
-    Shadowtls,
     Custom,
 }
 
@@ -213,98 +202,6 @@ pub struct Wireguard {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
-pub struct Hysteria2 {
-    pub meta: Meta,
-    pub endpoint: Endpoint,
-    #[serde(default)]
-    pub tls: Tls,
-    pub password: String,
-    #[serde(default)]
-    pub obfs_type: Hysteria2Obfs,
-    #[serde(default)]
-    pub obfs_password: String,
-    #[serde(default)]
-    pub ports: String,
-    #[serde(default)]
-    pub hop_interval: String,
-    #[serde(default)]
-    pub up_mbps: i64,
-    #[serde(default)]
-    pub down_mbps: i64,
-    #[serde(default)]
-    pub pin_sha256: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct Tuic {
-    pub meta: Meta,
-    pub endpoint: Endpoint,
-    #[serde(default)]
-    pub tls: Tls,
-    pub uuid: String,
-    pub password: String,
-    #[serde(default = "congestion_bbr")]
-    pub congestion_control: CongestionControl,
-    #[serde(default)]
-    pub udp_relay_mode: String,
-    #[serde(default)]
-    pub zero_rtt: bool,
-    #[serde(default)]
-    pub udp_over_stream: bool,
-    #[serde(default)]
-    pub heartbeat: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct Anytls {
-    pub meta: Meta,
-    pub endpoint: Endpoint,
-    #[serde(default)]
-    pub tls: Tls,
-    pub password: String,
-    #[serde(default)]
-    pub idle_session_check_interval: String,
-    #[serde(default)]
-    pub idle_session_timeout: String,
-    #[serde(default)]
-    pub min_idle_session: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct Naive {
-    pub meta: Meta,
-    pub endpoint: Endpoint,
-    #[serde(default)]
-    pub tls: Tls,
-    #[serde(default)]
-    pub username: String,
-    pub password: String,
-    #[serde(default)]
-    pub naive_quic: bool,
-    #[serde(default = "congestion_bbr")]
-    pub congestion_control: CongestionControl,
-    #[serde(default)]
-    pub insecure_concurrency: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct Shadowtls {
-    pub meta: Meta,
-    pub endpoint: Endpoint,
-    #[serde(default)]
-    pub tls: Tls,
-    #[serde(default = "shadowtls_version")]
-    pub version: i64,
-    #[serde(default)]
-    pub password: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
 pub struct Custom {
     pub meta: Meta,
     #[serde(default)]
@@ -322,11 +219,6 @@ pub enum Profile {
     Socks(Socks),
     Http(Http),
     Wireguard(Wireguard),
-    Hysteria2(Hysteria2),
-    Tuic(Tuic),
-    Anytls(Anytls),
-    Naive(Naive),
-    Shadowtls(Shadowtls),
     Custom(Custom),
 }
 
@@ -341,11 +233,6 @@ impl Profile {
             Profile::Socks(_) => Protocol::Socks,
             Profile::Http(_) => Protocol::Http,
             Profile::Wireguard(_) => Protocol::Wireguard,
-            Profile::Hysteria2(_) => Protocol::Hysteria2,
-            Profile::Tuic(_) => Protocol::Tuic,
-            Profile::Anytls(_) => Protocol::Anytls,
-            Profile::Naive(_) => Protocol::Naive,
-            Profile::Shadowtls(_) => Protocol::Shadowtls,
             Profile::Custom(_) => Protocol::Custom,
         }
     }
@@ -382,11 +269,6 @@ impl Profile {
             Profile::Trojan(p) => Some(&p.tls),
             Profile::Shadowsocks(p) => Some(&p.tls),
             Profile::Http(p) => Some(&p.tls),
-            Profile::Hysteria2(p) => Some(&p.tls),
-            Profile::Tuic(p) => Some(&p.tls),
-            Profile::Anytls(p) => Some(&p.tls),
-            Profile::Naive(p) => Some(&p.tls),
-            Profile::Shadowtls(p) => Some(&p.tls),
             _ => None,
         }
     }
@@ -401,11 +283,6 @@ impl Profile {
             Profile::Socks(p) => Some(&p.endpoint),
             Profile::Http(p) => Some(&p.endpoint),
             Profile::Wireguard(p) => Some(&p.endpoint),
-            Profile::Hysteria2(p) => Some(&p.endpoint),
-            Profile::Tuic(p) => Some(&p.endpoint),
-            Profile::Anytls(p) => Some(&p.endpoint),
-            Profile::Naive(p) => Some(&p.endpoint),
-            Profile::Shadowtls(p) => Some(&p.endpoint),
             Profile::Custom(_) => None,
         }
     }
@@ -420,16 +297,11 @@ impl Profile {
             Profile::Socks(p) => &p.meta,
             Profile::Http(p) => &p.meta,
             Profile::Wireguard(p) => &p.meta,
-            Profile::Hysteria2(p) => &p.meta,
-            Profile::Tuic(p) => &p.meta,
-            Profile::Anytls(p) => &p.meta,
-            Profile::Naive(p) => &p.meta,
-            Profile::Shadowtls(p) => &p.meta,
             Profile::Custom(p) => &p.meta,
         }
     }
 
-    /// Mutable access to the shared identity fields (for sub-apply re-tagging).
+    /// Mutable access to the shared identity fields (for re-tagging on import).
     pub fn meta_mut(&mut self) -> &mut Meta {
         match self {
             Profile::Vless(p) => &mut p.meta,
@@ -439,11 +311,6 @@ impl Profile {
             Profile::Socks(p) => &mut p.meta,
             Profile::Http(p) => &mut p.meta,
             Profile::Wireguard(p) => &mut p.meta,
-            Profile::Hysteria2(p) => &mut p.meta,
-            Profile::Tuic(p) => &mut p.meta,
-            Profile::Anytls(p) => &mut p.meta,
-            Profile::Naive(p) => &mut p.meta,
-            Profile::Shadowtls(p) => &mut p.meta,
             Profile::Custom(p) => &mut p.meta,
         }
     }
@@ -458,28 +325,22 @@ impl Profile {
         self.endpoint().map(|e| e.port)
     }
 
-    /// The credential the dedup/filter treats as the profile's `uuid` field.
+    /// The credential the filter treats as the profile's `uuid` field.
     pub fn uuid(&self) -> Option<&str> {
         match self {
             Profile::Vless(p) => Some(&p.uuid),
             Profile::Vmess(p) => Some(&p.uuid),
-            Profile::Tuic(p) => Some(&p.uuid),
             _ => None,
         }
     }
 
-    /// The credential the dedup/filter treats as the profile's `password` field.
+    /// The credential the filter treats as the profile's `password` field.
     pub fn password(&self) -> Option<&str> {
         match self {
             Profile::Trojan(p) => Some(&p.password),
             Profile::Shadowsocks(p) => Some(&p.password),
             Profile::Socks(p) => Some(&p.password),
             Profile::Http(p) => Some(&p.password),
-            Profile::Hysteria2(p) => Some(&p.password),
-            Profile::Tuic(p) => Some(&p.password),
-            Profile::Anytls(p) => Some(&p.password),
-            Profile::Naive(p) => Some(&p.password),
-            Profile::Shadowtls(p) => Some(&p.password),
             _ => None,
         }
     }
@@ -495,8 +356,7 @@ mod tests {
         // A realistic vless profile with every nested group present.
         let json = serde_json::json!({
             "protocol": "vless",
-            "meta": { "id": "p1", "remarks": "Home", "groupId": "g-main",
-                "subId": null, "coreType": null },
+            "meta": { "id": "p1", "remarks": "Home", "groupId": "g-main" },
             "endpoint": { "address": "ex.com", "port": 443 },
             "transport": { "kind": "ws", "host": "ex.com", "path": "/v" },
             "tls": { "security": "reality", "sni": "ex.com", "fingerprint": "chrome",
@@ -507,7 +367,6 @@ mod tests {
         let p: Profile = serde_json::from_value(json).unwrap();
         assert_eq!(p.protocol(), Protocol::Vless);
         assert_eq!(p.meta().id, "p1");
-        assert_eq!(p.meta().sub_id, None);
         let Profile::Vless(v) = &p else {
             panic!("not vless")
         };
@@ -521,7 +380,6 @@ mod tests {
         let wire = serde_json::to_value(&p).unwrap();
         assert_eq!(wire["transport"]["kind"], "ws");
         assert_eq!(wire["endpoint"]["address"], "ex.com");
-        assert!(wire["meta"]["coreType"].is_null());
         assert!(
             wire.get("network").is_none(),
             "transport must not be flattened"
@@ -546,8 +404,7 @@ mod tests {
         assert_eq!(v.tls.fingerprint, crate::enums::Fingerprint::Chrome);
         assert_eq!(v.encryption, "none"); // field default
         assert_eq!(v.flow, Flow::Empty);
-        assert_eq!(v.meta.core_type, None);
-        assert_eq!(v.meta.sub_id, None);
+        assert_eq!(v.meta.via, None);
     }
 
     #[test]

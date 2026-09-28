@@ -1,5 +1,5 @@
 //! Packet routing for the xray data-path: iptables marking + ip rules/tables +
-//! fwmark. sing-box manages its own tun via auto_route, so these run for xray only.
+//! fwmark.
 
 use std::collections::BTreeMap;
 
@@ -19,8 +19,8 @@ const TUN_TABLE_FORCE: &str = "1101";
 const PRIO_TUN: &str = "1010";
 const PRIO_TUN_FORCE: &str = "1011";
 
-// Below sing-box's strict_route rules (pref 9000+), above the OS band, distinct
-// from our xray LAN-bypass rules (5020-5050).
+// A legacy strict-route carve-out preference an older build installed; only the
+// cleanup path reads it now (a preference band above the OS one).
 const STRICT_CARVEOUT_PREF: &str = "8500";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,48 +97,9 @@ async fn capture_mark_rules(ipt: &str, filter: &AppFilter) {
     }
 }
 
-/// Strict-mode carve-out (sing-box): its `strict_route` adds a rule funnelling
-/// every non-loopback-origin packet — including incoming connections and the reply
-/// path of uplink-pinned traffic — into the tunnel. Pin packets arriving on the
-/// physical uplink back to the uplink's own table at higher priority so the device
-/// stays reachable under the kill-switch. xray needs no equivalent (its
-/// REPLY-direction RETURN already spares incoming).
-pub async fn apply_strict_carveouts() {
-    let Some(uplink) = default_uplink().await else {
-        return;
-    };
-    for v6 in [false, true] {
-        ip_rule(
-            v6,
-            &[
-                "rule",
-                "del",
-                "iif",
-                &uplink,
-                "lookup",
-                &uplink,
-                "pref",
-                STRICT_CARVEOUT_PREF,
-            ],
-        )
-        .await;
-        ip_rule(
-            v6,
-            &[
-                "rule",
-                "add",
-                "iif",
-                &uplink,
-                "lookup",
-                &uplink,
-                "pref",
-                STRICT_CARVEOUT_PREF,
-            ],
-        )
-        .await;
-    }
-}
-
+/// Legacy cleanup: remove any strict-route carve-out rule an older build
+/// installed. The xray data-path has no equivalent (its REPLY-direction RETURN
+/// already spares incoming traffic).
 async fn clear_strict_carveouts() {
     for v6 in [false, true] {
         for _ in 0..4 {

@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import {
   Card,
   Field,
@@ -10,44 +9,7 @@ import {
 } from "../../../components";
 import { DEFAULT_LOG_ROTATE_KB } from "../../../generated/defaults";
 import { type Lang, LOCALES, useLang, useT } from "../../../i18n";
-import {
-  autostartSupported,
-  isAutostartEnabled,
-  setAutostartEnabled,
-} from "../../../lib/autostart";
 import type { AdvancedSettings } from "../../../lib/bridge";
-
-/** Desktop-only "launch the app on login" toggle (OS-level, via the autostart
- * plugin). Renders nothing where unsupported (the Android WebUI). */
-function LaunchOnLoginRow() {
-  const t = useT();
-  const [on, setOn] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    void isAutostartEnabled().then((v) => {
-      if (alive) setOn(v);
-    });
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  if (!autostartSupported()) return null;
-
-  return (
-    <RowToggle
-      icon="autorenew"
-      title={t("settings.launchOnLogin")}
-      sub={t("settings.launchOnLoginSub")}
-      on={on}
-      onChange={(value) => {
-        setOn(value); // optimistic; revert if the plugin call fails
-        void setAutostartEnabled(value).catch(() => setOn(!value));
-      }}
-    />
-  );
-}
 
 export function SystemSection({
   settings,
@@ -84,14 +46,6 @@ export function SystemSection({
           sub={t("settings.autoStartSub")}
           on={settings.autoStart ?? true}
           onChange={(value) => set("autoStart", value)}
-        />
-        <LaunchOnLoginRow />
-        <RowToggle
-          icon="content_copy"
-          title={t("settings.dedupOnUpdate")}
-          sub={t("settings.dedupOnUpdateSub")}
-          on={settings.dedupOnUpdate ?? false}
-          onChange={(value) => set("dedupOnUpdate", value)}
         />
         <NavRow
           icon="backup"

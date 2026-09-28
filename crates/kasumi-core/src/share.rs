@@ -1,6 +1,6 @@
 //! Parse and build share links across every supported scheme: the URL-based
-//! protocols (vless / trojan / socks / http / wireguard), the base64 ones
-//! (vmess / ss) and the QUIC family, plus the scheme dispatch.
+//! protocols (vless / trojan / socks / http / wireguard) and the base64 ones
+//! (vmess / ss), plus the scheme dispatch.
 //!
 //! `parse_share_link` is pinned against committed reference fixtures
 //! (`tests/fixtures/share_parse.json`) for byte-exact parity.
@@ -22,16 +22,14 @@ use std::collections::BTreeMap;
 
 use crate::config_shared::{parse_ws_early_data, split_csv};
 use crate::enums::{
-    CongestionControl, Fingerprint, Flow, HeaderType, Hysteria2Obfs, Network, PacketEncoding,
-    Security, SsMethod, VmessEnc,
+    Fingerprint, Flow, HeaderType, Network, PacketEncoding, Security, SsMethod, VmessEnc,
 };
 use crate::mixins::{
-    Endpoint, GrpcTransport, H2Transport, HttpUpgradeTransport, KcpTransport, Meta, QuicTransport,
-    TcpTransport, Tls, Transport, WsTransport, XhttpTransport,
+    Endpoint, GrpcTransport, HttpUpgradeTransport, KcpTransport, Meta, TcpTransport, Tls,
+    Transport, WsTransport, XhttpTransport,
 };
 use crate::profile::{
-    Anytls, Http, Hysteria2, Naive, Profile, Shadowsocks, Shadowtls, Socks, Trojan, Tuic, Vless,
-    Vmess, WG_DEFAULT_LOCAL_ADDRESS, Wireguard,
+    Http, Profile, Shadowsocks, Socks, Trojan, Vless, Vmess, WG_DEFAULT_LOCAL_ADDRESS, Wireguard,
 };
 use crate::uid::uid;
 
@@ -93,12 +91,6 @@ fn parse_host_port(hp: &str) -> (String, u16) {
     (h, port)
 }
 
-/// `?key=1|true` truthiness over several aliases.
-fn query_truthy(q: &HashMap<String, String>, keys: &[&str]) -> bool {
-    keys.iter()
-        .any(|k| matches!(q.get(*k).map(String::as_str), Some("1") | Some("true")))
-}
-
 /// Collect query params, first value winning (matches `URLSearchParams.get`).
 fn query_map(u: &Url) -> HashMap<String, String> {
     let mut q = HashMap::new();
@@ -114,9 +106,7 @@ fn as_network(v: Option<&str>) -> Network {
         "grpc" => Network::Grpc,
         "httpupgrade" => Network::Httpupgrade,
         "xhttp" => Network::Xhttp,
-        "h2" => Network::H2,
         "kcp" => Network::Kcp,
-        "quic" => Network::Quic,
         _ => Network::Tcp,
     }
 }
@@ -158,8 +148,6 @@ fn meta(remarks: String, group_id: Option<&str>) -> Meta {
         id: uid(),
         remarks,
         group_id: group_id.unwrap_or("g-main").to_string(),
-        sub_id: None,
-        core_type: None,
         via: None,
     }
 }
@@ -223,11 +211,6 @@ fn parse_url_based(uri: &str, proto: UrlProto, group_id: Option<&str>) -> Option
             mode: get("mode"),
             ..Default::default()
         }),
-        Network::H2 => Transport::H2(H2Transport {
-            host: get("host"),
-            path: get("path"),
-            ..Default::default()
-        }),
         // The HTTPUpgrade `ed` query param has historically been ignored here.
         Network::Httpupgrade => Transport::Httpupgrade(HttpUpgradeTransport {
             host: get("host"),
@@ -254,7 +237,6 @@ fn parse_url_based(uri: &str, proto: UrlProto, group_id: Option<&str>) -> Option
                 .unwrap_or(0),
             ..Default::default()
         }),
-        Network::Quic => Transport::Quic(QuicTransport { header_type }),
     };
 
     let mut tls = Tls::default();
@@ -409,14 +391,6 @@ fn as_ss_method(v: &str) -> SsMethod {
     }
 }
 
-fn as_cc(v: Option<&str>) -> CongestionControl {
-    match v {
-        Some("cubic") => CongestionControl::Cubic,
-        Some("new_reno") => CongestionControl::NewReno,
-        _ => CongestionControl::Bbr,
-    }
-}
-
 /// vmess — base64-wrapped JSON payload.
 fn parse_vmess(uri: &str, group_id: Option<&str>) -> Option<Profile> {
     let json = b64decode(&uri["vmess://".len()..])?;
@@ -499,11 +473,6 @@ fn parse_vmess(uri: &str, group_id: Option<&str>) -> Option<Profile> {
             mode: s("type"),
             ..Default::default()
         }),
-        Network::H2 => Transport::H2(H2Transport {
-            host: s("host"),
-            path: raw_path.clone(),
-            ..Default::default()
-        }),
         Network::Httpupgrade => Transport::Httpupgrade(HttpUpgradeTransport {
             host: s("host"),
             path: raw_path.clone(),
@@ -521,9 +490,6 @@ fn parse_vmess(uri: &str, group_id: Option<&str>) -> Option<Profile> {
             cwnd_multiplier: num("kcpCwndMultiplier"),
             max_sending_window: num("kcpMaxSendingWindow"),
             ..Default::default()
-        }),
-        Network::Quic => Transport::Quic(QuicTransport {
-            header_type: vmess_header_type,
         }),
     };
 
@@ -666,9 +632,9 @@ fn parse_ss(uri: &str, group_id: Option<&str>) -> Option<Profile> {
                         .replace("\\\\", "\\"),
                     ..Default::default()
                 });
-            } else if mode == "quic" {
-                p.transport = Transport::Quic(QuicTransport::default());
             }
+            // `mode=quic` targets the stand-alone plugin process, not the core
+            // transport — the shadowsocks outbound still dials it over TCP.
             if tls {
                 p.tls.security = Security::Tls;
                 if !stored_host.is_empty() && p.tls.sni.is_empty() {
@@ -679,162 +645,6 @@ fn parse_ss(uri: &str, group_id: Option<&str>) -> Option<Profile> {
     }
 
     Some(Profile::Shadowsocks(p))
-}
-
-fn parse_hysteria2(uri: &str, group_id: Option<&str>) -> Option<Profile> {
-    // Normalise the hy2:// alias so the URL parser keeps a stable scheme.
-    let normalised = if let Some(rest) = uri.strip_prefix("hy2://") {
-        format!("hysteria2://{rest}")
-    } else {
-        uri.to_string()
-    };
-    let u = Url::parse(&normalised).ok()?;
-    let q = query_map(&u);
-    let mut tls = Tls::default();
-    tls.security = Security::Tls;
-    tls.sni = q.get("sni").cloned().unwrap_or_default();
-    tls.alpn = split_csv(&q.get("alpn").cloned().unwrap_or_default()).unwrap_or_default();
-    tls.allow_insecure = q.get("insecure").map(String::as_str) == Some("1");
-    Some(Profile::Hysteria2(Hysteria2 {
-        meta: meta(remarks_or_host(&u), group_id),
-        endpoint: Endpoint {
-            address: u.host_str().unwrap_or("").to_string(),
-            port: u.port().unwrap_or(443),
-        },
-        tls,
-        password: pct(u.username()),
-        obfs_type: if q.get("obfs").map(String::as_str) == Some("salamander") {
-            Hysteria2Obfs::Salamander
-        } else {
-            Hysteria2Obfs::Empty
-        },
-        obfs_password: q.get("obfs-password").cloned().unwrap_or_default(),
-        ports: q.get("mport").cloned().unwrap_or_default(),
-        hop_interval: String::new(),
-        up_mbps: 0,
-        down_mbps: 0,
-        pin_sha256: q.get("pinSHA256").cloned().unwrap_or_default(),
-    }))
-}
-
-fn parse_tuic(uri: &str, group_id: Option<&str>) -> Option<Profile> {
-    let u = Url::parse(uri).ok()?;
-    let q = query_map(&u);
-    let mut tls = Tls::default();
-    tls.security = Security::Tls;
-    tls.sni = q.get("sni").cloned().unwrap_or_default();
-    tls.alpn = split_csv(&q.get("alpn").cloned().unwrap_or_default()).unwrap_or_default();
-    tls.allow_insecure = query_truthy(&q, &["allow_insecure", "allowInsecure", "insecure"]);
-    Some(Profile::Tuic(Tuic {
-        meta: meta(remarks_or_host(&u), group_id),
-        endpoint: Endpoint {
-            address: u.host_str().unwrap_or("").to_string(),
-            port: u.port().unwrap_or(443),
-        },
-        tls,
-        uuid: pct(u.username()),
-        password: pct(u.password().unwrap_or("")),
-        congestion_control: as_cc(q.get("congestion_control").map(String::as_str)),
-        udp_relay_mode: q.get("udp_relay_mode").cloned().unwrap_or_default(),
-        zero_rtt: query_truthy(&q, &["zero_rtt_handshake"]),
-        udp_over_stream: false,
-        heartbeat: String::new(),
-    }))
-}
-
-fn parse_anytls(uri: &str, group_id: Option<&str>) -> Option<Profile> {
-    let u = Url::parse(uri).ok()?;
-    let q = query_map(&u);
-    let cred = {
-        let un = pct(u.username());
-        if un.is_empty() {
-            pct(u.password().unwrap_or(""))
-        } else {
-            un
-        }
-    };
-    let mut tls = Tls::default();
-    tls.security = Security::Tls;
-    tls.sni = q.get("sni").cloned().unwrap_or_default();
-    tls.alpn = split_csv(&q.get("alpn").cloned().unwrap_or_default()).unwrap_or_default();
-    tls.fingerprint = as_fingerprint(q.get("fp").map(String::as_str));
-    tls.allow_insecure = query_truthy(&q, &["allowInsecure", "allow_insecure", "insecure"]);
-    tls.ech = q.get("ech").cloned().unwrap_or_default();
-    tls.pcs = q.get("pcs").cloned().unwrap_or_default();
-    Some(Profile::Anytls(Anytls {
-        meta: meta(remarks_or_host(&u), group_id),
-        endpoint: Endpoint {
-            address: u.host_str().unwrap_or("").to_string(),
-            port: u.port().unwrap_or(443),
-        },
-        tls,
-        password: cred,
-        idle_session_check_interval: String::new(),
-        idle_session_timeout: String::new(),
-        min_idle_session: 0,
-    }))
-}
-
-fn parse_naive(uri: &str, group_id: Option<&str>) -> Option<Profile> {
-    let u = Url::parse(uri).ok()?;
-    let q = query_map(&u);
-    let mut tls = Tls::default();
-    tls.security = Security::Tls;
-    tls.sni = q.get("sni").cloned().unwrap_or_default();
-    tls.alpn = split_csv(&q.get("alpn").cloned().unwrap_or_default()).unwrap_or_default();
-    tls.fingerprint = as_fingerprint(q.get("fp").map(String::as_str));
-    tls.allow_insecure = query_truthy(&q, &["allowInsecure", "allow_insecure", "insecure"]);
-    tls.ech = q.get("ech").cloned().unwrap_or_default();
-    tls.pcs = q.get("pcs").cloned().unwrap_or_default();
-    Some(Profile::Naive(Naive {
-        meta: meta(remarks_or_host(&u), group_id),
-        endpoint: Endpoint {
-            address: u.host_str().unwrap_or("").to_string(),
-            port: u.port().unwrap_or(443),
-        },
-        tls,
-        username: pct(u.username()),
-        password: pct(u.password().unwrap_or("")),
-        naive_quic: u.scheme().starts_with("naive+quic"),
-        congestion_control: as_cc(q.get("congestion_control").map(String::as_str)),
-        insecure_concurrency: q
-            .get("insecure-concurrency")
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0),
-    }))
-}
-
-fn parse_shadowtls(uri: &str, group_id: Option<&str>) -> Option<Profile> {
-    let u = Url::parse(uri).ok()?;
-    let q = query_map(&u);
-    let ver = q
-        .get("version")
-        .and_then(|s| s.parse::<i64>().ok())
-        .filter(|n| *n != 0)
-        .unwrap_or(3)
-        .clamp(1, 3);
-    let mut tls = Tls::default();
-    tls.security = Security::Tls;
-    tls.sni = q.get("sni").cloned().unwrap_or_default();
-    tls.fingerprint = as_fingerprint(q.get("fp").map(String::as_str));
-    let cred = {
-        let un = pct(u.username());
-        if un.is_empty() {
-            pct(u.password().unwrap_or(""))
-        } else {
-            un
-        }
-    };
-    Some(Profile::Shadowtls(Shadowtls {
-        meta: meta(remarks_or_host(&u), group_id),
-        endpoint: Endpoint {
-            address: u.host_str().unwrap_or("").to_string(),
-            port: u.port().unwrap_or(443),
-        },
-        tls,
-        version: ver,
-        password: cred,
-    }))
 }
 
 /// Parse a single share link into a [`Profile`], or `None` if unsupported.
@@ -851,21 +661,6 @@ pub fn parse_share_link(uri: &str, group_id: Option<&str>) -> Option<Profile> {
     }
     if s.starts_with("ss://") {
         return parse_ss(s, group_id);
-    }
-    if s.starts_with("hysteria2://") || s.starts_with("hy2://") {
-        return parse_hysteria2(s, group_id);
-    }
-    if s.starts_with("tuic://") {
-        return parse_tuic(s, group_id);
-    }
-    if s.starts_with("anytls://") {
-        return parse_anytls(s, group_id);
-    }
-    if s.starts_with("naive+https://") || s.starts_with("naive+quic://") {
-        return parse_naive(s, group_id);
-    }
-    if s.starts_with("shadowtls://") {
-        return parse_shadowtls(s, group_id);
     }
     if s.starts_with("wireguard://") {
         return parse_wireguard(s, group_id);
@@ -1219,8 +1014,7 @@ fn build_ss(p: &Shadowsocks) -> String {
         }
         other => {
             let is_ws = matches!(other, Transport::Ws(_));
-            let is_quic = matches!(other, Transport::Quic(_));
-            if is_ws || is_quic || p.tls.security == Security::Tls {
+            if is_ws || p.tls.security == Security::Tls {
                 let mut parts = vec!["v2ray-plugin".to_string()];
                 if let Transport::Ws(w) = other {
                     parts.push("mode=websocket".into());
@@ -1235,8 +1029,6 @@ fn build_ss(p: &Shadowsocks) -> String {
                             .replace(',', "\\,");
                         parts.push(format!("path={path}"));
                     }
-                } else if is_quic {
-                    parts.push("mode=quic".into());
                 }
                 if p.tls.security == Security::Tls {
                     parts.push("tls".into());
@@ -1256,169 +1048,6 @@ fn build_ss(p: &Shadowsocks) -> String {
         "ss://{info}@{}:{}{qs}{}",
         p.endpoint.address,
         p.endpoint.port,
-        frag(&p.meta.remarks)
-    )
-}
-
-fn build_hysteria2(p: &Hysteria2) -> String {
-    let mut q = Query::default();
-    if !p.tls.sni.is_empty() {
-        q.set("sni", p.tls.sni.clone());
-    }
-    if !p.tls.alpn.is_empty() {
-        q.set("alpn", p.tls.alpn.join(","));
-    }
-    if p.tls.allow_insecure {
-        q.set("insecure", "1");
-    }
-    if p.obfs_type == Hysteria2Obfs::Salamander && !p.obfs_password.is_empty() {
-        q.set("obfs", "salamander");
-        q.set("obfs-password", p.obfs_password.clone());
-    }
-    if !p.ports.is_empty() {
-        q.set("mport", p.ports.replace(':', "-"));
-    }
-    if !p.pin_sha256.is_empty() {
-        q.set("pinSHA256", p.pin_sha256.clone());
-    }
-    let qs = q.finish();
-    let qs = if qs.is_empty() {
-        String::new()
-    } else {
-        format!("?{qs}")
-    };
-    format!(
-        "hysteria2://{}@{}:{}{qs}{}",
-        enc(&p.password),
-        p.endpoint.address,
-        p.endpoint.port,
-        frag(&p.meta.remarks)
-    )
-}
-
-fn build_tuic(p: &Tuic) -> String {
-    let mut q = Query::default();
-    q.set("congestion_control", wire(&p.congestion_control));
-    if !p.udp_relay_mode.is_empty() {
-        q.set("udp_relay_mode", p.udp_relay_mode.clone());
-    }
-    if p.zero_rtt {
-        q.set("zero_rtt_handshake", "1");
-    }
-    if !p.tls.sni.is_empty() {
-        q.set("sni", p.tls.sni.clone());
-    }
-    if !p.tls.alpn.is_empty() {
-        q.set("alpn", p.tls.alpn.join(","));
-    }
-    if p.tls.allow_insecure {
-        q.set("allow_insecure", "1");
-    }
-    format!(
-        "tuic://{}:{}@{}:{}?{}{}",
-        enc(&p.uuid),
-        enc(&p.password),
-        p.endpoint.address,
-        p.endpoint.port,
-        q.finish(),
-        frag(&p.meta.remarks)
-    )
-}
-
-fn build_anytls(p: &Anytls) -> String {
-    let mut q = Query::default();
-    if !p.tls.sni.is_empty() {
-        q.set("sni", p.tls.sni.clone());
-    }
-    if !p.tls.alpn.is_empty() {
-        q.set("alpn", p.tls.alpn.join(","));
-    }
-    if p.tls.fingerprint != Fingerprint::Empty {
-        q.set("fp", wire(&p.tls.fingerprint));
-    }
-    if p.tls.allow_insecure {
-        q.set("allowInsecure", "1");
-    }
-    if !p.tls.ech.is_empty() {
-        q.set("ech", p.tls.ech.clone());
-    }
-    if !p.tls.pcs.is_empty() {
-        q.set("pcs", p.tls.pcs.clone());
-    }
-    let qs = q.finish();
-    let qs = if qs.is_empty() {
-        String::new()
-    } else {
-        format!("?{qs}")
-    };
-    format!(
-        "anytls://{}@{}:{}{qs}{}",
-        enc(&p.password),
-        p.endpoint.address,
-        p.endpoint.port,
-        frag(&p.meta.remarks)
-    )
-}
-
-fn build_naive(p: &Naive) -> String {
-    let mut q = Query::default();
-    q.set("congestion_control", wire(&p.congestion_control));
-    if p.insecure_concurrency != 0 {
-        q.set("insecure-concurrency", p.insecure_concurrency.to_string());
-    }
-    if !p.tls.sni.is_empty() {
-        q.set("sni", p.tls.sni.clone());
-    }
-    if !p.tls.alpn.is_empty() {
-        q.set("alpn", p.tls.alpn.join(","));
-    }
-    if p.tls.fingerprint != Fingerprint::Empty {
-        q.set("fp", wire(&p.tls.fingerprint));
-    }
-    if p.tls.allow_insecure {
-        q.set("allowInsecure", "1");
-    }
-    if !p.tls.ech.is_empty() {
-        q.set("ech", p.tls.ech.clone());
-    }
-    if !p.tls.pcs.is_empty() {
-        q.set("pcs", p.tls.pcs.clone());
-    }
-    let qs = q.finish();
-    let qs = if qs.is_empty() {
-        String::new()
-    } else {
-        format!("?{qs}")
-    };
-    let scheme = if p.naive_quic {
-        "naive+quic"
-    } else {
-        "naive+https"
-    };
-    format!(
-        "{scheme}://{}@{}:{}{qs}{}",
-        userinfo(&p.username, &p.password),
-        p.endpoint.address,
-        p.endpoint.port,
-        frag(&p.meta.remarks)
-    )
-}
-
-fn build_shadowtls(p: &Shadowtls) -> String {
-    let mut q = Query::default();
-    q.set("version", p.version.to_string());
-    if !p.tls.sni.is_empty() {
-        q.set("sni", p.tls.sni.clone());
-    }
-    if p.tls.fingerprint != Fingerprint::Empty {
-        q.set("fp", wire(&p.tls.fingerprint));
-    }
-    format!(
-        "shadowtls://{}@{}:{}?{}{}",
-        enc(&p.password),
-        p.endpoint.address,
-        p.endpoint.port,
-        q.finish(),
         frag(&p.meta.remarks)
     )
 }
@@ -1501,7 +1130,7 @@ fn build_http(p: &Http) -> String {
 // Shareable schemes (S = the proxy schemes; SH adds http/https, which only count
 // as links when they carry userinfo `@`). FRAG lazily captures a remarks fragment
 // up to the next whitespace-separated scheme, a newline, or end (lookahead).
-const SCHEMES: &str = r"vless|vmess|trojan|ss|hysteria2|hy2|tuic|anytls|naive\+https|naive\+quic|shadowtls|wireguard|socks5?";
+const SCHEMES: &str = r"vless|vmess|trojan|ss|wireguard|socks5?";
 
 static URI_RE: LazyLock<FancyRegex> = LazyLock::new(|| {
     let sh = format!("{SCHEMES}|https?");
@@ -1561,11 +1190,6 @@ pub fn build_share_link(p: &Profile) -> String {
         Profile::Vmess(v) => build_vmess(v),
         Profile::Vless(_) | Profile::Trojan(_) => build_url_based(p),
         Profile::Shadowsocks(s) => build_ss(s),
-        Profile::Hysteria2(h) => build_hysteria2(h),
-        Profile::Tuic(t) => build_tuic(t),
-        Profile::Anytls(a) => build_anytls(a),
-        Profile::Naive(n) => build_naive(n),
-        Profile::Shadowtls(s) => build_shadowtls(s),
         Profile::Wireguard(w) => build_wireguard(w),
         Profile::Socks(s) => build_socks(s),
         Profile::Http(h) => build_http(h),
@@ -1611,7 +1235,7 @@ mod tests {
             have["meta"]["id"] = Value::String(String::new());
             assert_eq!(have, want, "parse vs migrated-reference mismatch for {uri}");
         }
-        assert_eq!(cases.len(), 54);
+        assert_eq!(cases.len(), 36);
     }
 
     #[test]
@@ -1631,7 +1255,7 @@ mod tests {
             got_v["meta"]["id"] = Value::String(String::new()); // normalise the random uid()
             assert_eq!(&got_v, expected, "mismatch for {uri}");
         }
-        assert_eq!(cases.len(), 25);
+        assert_eq!(cases.len(), 18);
     }
 
     #[test]
@@ -1665,7 +1289,7 @@ mod tests {
             checked += 1;
         }
         assert!(
-            checked >= 20,
+            checked >= 14,
             "expected most cases parseable, got {checked}"
         );
     }

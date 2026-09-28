@@ -1,28 +1,24 @@
 # shellcheck shell=bash
-# Single source of truth for the pinned binary versions, sourced by fetch-binaries.sh
-# (and update-binary-hashes.sh / nix). Each value is overridable via the environment
-# (the release workflow passes the upstream latest when bumping). release.yml/
-# nightly.yml grep these defaults to detect upstream updates — keep the
-# `NAME="${NAME:-vX}"` shape.
-XRAY_VERSION="${XRAY_VERSION:-v26.3.27}"
-TUN2SOCKS_VERSION="${TUN2SOCKS_VERSION:-v2.7.0}"
-# Alternative TUN engine (heiher/hev-socks5-tunnel). Selectable per core in
-# Settings; pairs with a socks-only core. Tags have no leading 'v'.
-HEV_VERSION="${HEV_VERSION:-2.15.0}"
-# sing-box runs Hysteria2/TUIC profiles (second core). Pin a line whose config
-# schema matches singbox_config.rs (mixed inbound, tls/utls, hysteria2/tuic).
-SINGBOX_VERSION="${SINGBOX_VERSION:-v1.14.0}"
-# geodat2srs converts geoip/geosite .dat → sing-box .srs rule-sets. Unlike the
-# cores above it ships NO release artifacts — it is built from source at this rev
-# (CGO off, static): scripts/fetch-binaries.sh builds it for both the Android module
-# and the desktop Tauri/CI bundles, and the desktop `nix build` uses the matching
-# buildGoModule derivation in nix/binaries.nix. It has no tags, so pin the commit on
-# main directly. Its go.mod pins sing-box to the same line as SINGBOX_VERSION —
-# bump them together: the .srs format version follows the core, and a set written
-# by the newer writer is rejected by the older core ("unsupported version").
-GEODAT2SRS_REV="${GEODAT2SRS_REV:-eba138bf95ab128e87f881d888009b27779d609e}"
+# Single source of truth for the pinned third-party binaries:
+#   - the Xray core (compiled from a pinned source archive — scripts/build-xray.sh)
+#   - the two TUN helpers (release assets, catalogued in scripts/binaries.json)
+#
+# Every value is overridable via the environment so a local build can test a
+# different pin without editing this file.
+#
+# ── Xray core: eichgee/Xray-core (a standalone fork of XTLS/Xray-core) ──
+# The fork carries the extra resolver/ping/wireguard patches this project builds
+# against. It ships NO release assets, so CI and local builds compile the core
+# from this pinned source archive; XRAY_ZIP_SHA256 is the integrity gate —
+# scripts/build-xray.sh verifies it before extracting, and fails loudly on a
+# mismatch (repo retag, tampered download).
+XRAY_REPO="${XRAY_REPO:-eichgee/Xray-core}"
+XRAY_TAG="${XRAY_TAG:-v1.250516.0-patch.20}"
+XRAY_COMMIT="${XRAY_COMMIT:-725e55dd}" # short sha the pinned tag resolved to
+XRAY_ZIP_SHA256="${XRAY_ZIP_SHA256:-eb0a48b2d70bd9dd81f17151088f353f4840ade92c10aaec089798a4f9802d58}"
 
-# Windows only: the wintun driver DLL that sing-box (tun inbound) and tun2socks
-# both dlopen from the app directory. Bundled next to the cores on the Windows
-# target; unused on Linux. Pinned to the last upstream wintun.net build.
-WINTUN_VERSION="${WINTUN_VERSION:-0.14.1}"
+# ── TUN helpers ──
+# tun2socks: TUN → SOCKS5 bridge (one of the two selectable TUN engines).
+TUN2SOCKS_VERSION="${TUN2SOCKS_VERSION:-v2.7.0}"
+# hev-socks5-tunnel: the other TUN engine. Tags have no leading 'v'.
+HEV_VERSION="${HEV_VERSION:-2.15.0}"

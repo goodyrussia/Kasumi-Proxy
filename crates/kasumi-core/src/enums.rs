@@ -3,37 +3,14 @@
 
 use serde::{Deserialize, Serialize};
 
-/// An actual proxy core. Wire values: `"xray"`, `"sing-box"`.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Serialize,
-    Deserialize,
-    strum::EnumIter,
-    specta::Type,
-)]
-#[serde(rename_all = "kebab-case")]
-pub enum CoreEngine {
-    Xray,
-    SingBox,
-}
-
-/// Which engine bridges the TUN device to the proxy core. `SingboxTun` means
-/// "use sing-box's own native TUN stack" (sing-box core only); `Tun2socks` and
-/// `Hev` are external userspace tun→socks processes in front of a socks-only core.
-/// Further engines plug in as new variants. Wire values: `"singbox-tun"`,
-/// `"tun2socks"`, `"hev"`.
+/// Which engine bridges the TUN device to the proxy core. `Tun2socks` and `Hev`
+/// are external userspace tun→socks processes in front of the socks-only Xray
+/// core. Further engines plug in as new variants. Wire values: `"tun2socks"`,
+/// `"hev"`.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::EnumIter, specta::Type,
 )]
 pub enum TunEngine {
-    #[serde(rename = "singbox-tun")]
-    SingboxTun,
     #[serde(rename = "tun2socks")]
     Tun2socks,
     #[serde(rename = "hev")]
@@ -41,9 +18,9 @@ pub enum TunEngine {
 }
 
 /// The wire label of a TUN engine — its serde value, the single source. Used as
-/// the on-disk marker that records which engine a running data-path uses, so every
-/// shell (desktop helper, Android daemon) reads/writes one canonical label instead
-/// of hand-maintaining its own match.
+/// the on-disk marker that records which engine a running data-path uses, so the
+/// daemon reads/writes one canonical label instead of hand-maintaining its own
+/// match.
 pub fn tun_marker(tun: TunEngine) -> String {
     serde_json::to_value(tun)
         .ok()
@@ -62,9 +39,6 @@ pub fn tun_from_marker(s: &str) -> Option<TunEngine> {
 /// honours and nothing it would silently ignore.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, strum::EnumIter)]
 pub enum TunKnob {
-    /// sing-box TUN network stack (gvisor / system / mixed).
-    #[serde(rename = "singboxStack")]
-    SingboxStack,
     #[serde(rename = "tunConnectTimeoutMs")]
     ConnectTimeout,
     #[serde(rename = "tunTcpRwTimeoutMs")]
@@ -89,9 +63,6 @@ pub enum TunKnobKind {
 impl TunKnob {
     pub fn kind(self) -> TunKnobKind {
         match self {
-            TunKnob::SingboxStack => TunKnobKind::Choice {
-                options: wire_values::<crate::state::SingboxStack>(),
-            },
             TunKnob::ConnectTimeout
             | TunKnob::TcpRwTimeout
             | TunKnob::UdpRwTimeout
@@ -103,13 +74,12 @@ impl TunKnob {
 
 /// The engine-specific settings each TUN engine consumes, beyond the ones every
 /// engine shares (MTU, excluded addresses, strict routing). Must match what the
-/// engine's config builder actually reads: `singbox_tun_inbound` takes the stack,
-/// `build_tun2socks_config` the UDP timeout and TCP buffer, `build_hev_config`
-/// all five tuning knobs. Exhaustive match, so a new engine has to declare its own.
+/// engine's config builder actually reads: `build_tun2socks_config` takes the UDP
+/// timeout and TCP buffer, `build_hev_config` all five tuning knobs. Exhaustive
+/// match, so a new engine has to declare its own.
 pub fn tun_knobs(tun: TunEngine) -> &'static [TunKnob] {
     use TunKnob::*;
     match tun {
-        TunEngine::SingboxTun => &[SingboxStack],
         TunEngine::Tun2socks => &[UdpRwTimeout, TcpBufferSize],
         TunEngine::Hev => &[
             ConnectTimeout,
@@ -142,9 +112,7 @@ pub enum Network {
     Grpc,
     Httpupgrade,
     Xhttp,
-    H2,
     Kcp,
-    Quic,
 }
 
 /// TLS security mode.
@@ -326,39 +294,6 @@ pub enum SsMethod {
     Blake3Chacha20Poly1305,
 }
 
-/// TUIC / QUIC congestion control.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum::EnumIter, specta::Type,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum CongestionControl {
-    Bbr,
-    Cubic,
-    NewReno,
-}
-
-/// Hysteria2 obfuscation. `""` means none.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    Default,
-    strum::EnumIter,
-    specta::Type,
-)]
-#[serde(rename_all = "lowercase")]
-#[specta(type = String)]
-pub enum Hysteria2Obfs {
-    #[default]
-    #[serde(rename = "")]
-    Empty,
-    Salamander,
-}
-
 /// One enum variant's wire string, read from its `Serialize` output so callers
 /// never restate a value the enum already defines.
 pub fn wire_value<T: Serialize>(v: &T) -> String {
@@ -379,11 +314,10 @@ fn wire_values<T: strum::IntoEnumIterator + Serialize>() -> Vec<String> {
 pub fn editor_option_lists() -> Vec<(&'static str, Vec<String>)> {
     use crate::contract::LogTarget;
     use crate::profile::Protocol;
-    use crate::state::{RoutingMode, SingboxFragment};
+    use crate::state::RoutingMode;
     vec![
         ("PROTOCOL_OPTS", wire_values::<Protocol>()),
         ("ROUTING_MODE_OPTS", wire_values::<RoutingMode>()),
-        ("CORE_ENGINE_OPTS", wire_values::<CoreEngine>()),
         ("TUN_ENGINE_OPTS", wire_values::<TunEngine>()),
         ("LOG_TARGET_OPTS", wire_values::<LogTarget>()),
         ("NETWORK_OPTS", wire_values::<Network>()),
@@ -391,12 +325,9 @@ pub fn editor_option_lists() -> Vec<(&'static str, Vec<String>)> {
         ("HEADER_TYPE_OPTS", wire_values::<HeaderType>()),
         ("VMESS_ENC_OPTS", wire_values::<VmessEnc>()),
         ("SS_METHOD_OPTS", wire_values::<SsMethod>()),
-        ("CONGESTION_OPTS", wire_values::<CongestionControl>()),
         ("FINGERPRINT_OPTS", wire_values::<Fingerprint>()),
         ("FLOW_OPTS", wire_values::<Flow>()),
         ("PACKET_ENCODING_OPTS", wire_values::<PacketEncoding>()),
-        ("HYSTERIA2_OBFS_OPTS", wire_values::<Hysteria2Obfs>()),
-        ("SINGBOX_FRAGMENT_OPTS", wire_values::<SingboxFragment>()),
     ]
 }
 
@@ -410,14 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_selection_values() {
-        assert_eq!(wire(&CoreEngine::Xray), "\"xray\"");
-        assert_eq!(wire(&CoreEngine::SingBox), "\"sing-box\"");
-    }
-
-    #[test]
     fn tun_engine_values() {
-        assert_eq!(wire(&TunEngine::SingboxTun), "\"singbox-tun\"");
         assert_eq!(wire(&TunEngine::Tun2socks), "\"tun2socks\"");
         assert_eq!(wire(&TunEngine::Hev), "\"hev\"");
     }
@@ -429,9 +353,10 @@ mod tests {
         }
         // Marker equals the serde wire value (single source).
         assert_eq!(tun_marker(TunEngine::Tun2socks), "tun2socks");
-        assert_eq!(tun_marker(TunEngine::SingboxTun), "singbox-tun");
+        assert_eq!(tun_marker(TunEngine::Hev), "hev");
         // Unknown/legacy labels don't resolve.
         assert_eq!(tun_from_marker("nope"), None);
+        assert_eq!(tun_from_marker("singbox-tun"), None);
         assert_eq!(tun_from_marker(""), None);
     }
 
@@ -452,7 +377,6 @@ mod tests {
 
     #[test]
     fn tun_knobs_per_engine() {
-        assert_eq!(tun_knobs(TunEngine::SingboxTun), &[TunKnob::SingboxStack]);
         assert_eq!(
             tun_knobs(TunEngine::Tun2socks),
             &[TunKnob::UdpRwTimeout, TunKnob::TcpBufferSize]
@@ -463,10 +387,6 @@ mod tests {
     #[test]
     fn tun_knob_kinds() {
         assert_eq!(
-            serde_json::to_value(TunKnob::SingboxStack.kind()).unwrap(),
-            serde_json::json!({ "kind": "choice", "options": ["gvisor", "system", "mixed"] })
-        );
-        assert_eq!(
             serde_json::to_value(TunKnob::TcpBufferSize.kind()).unwrap(),
             serde_json::json!({ "kind": "number" })
         );
@@ -476,7 +396,6 @@ mod tests {
     fn network_and_security() {
         assert_eq!(wire(&Network::Httpupgrade), "\"httpupgrade\"");
         assert_eq!(wire(&Network::Xhttp), "\"xhttp\"");
-        assert_eq!(wire(&Network::H2), "\"h2\"");
         assert_eq!(Network::default(), Network::Tcp);
         assert_eq!(wire(&Security::None), "\"none\"");
         assert_eq!(Security::default(), Security::Tls);
@@ -493,7 +412,6 @@ mod tests {
             Fingerprint::Empty
         );
         assert_eq!(wire(&PacketEncoding::Empty), "\"\"");
-        assert_eq!(wire(&Hysteria2Obfs::Empty), "\"\"");
     }
 
     #[test]
@@ -506,6 +424,5 @@ mod tests {
             wire(&SsMethod::Blake3Chacha20Poly1305),
             "\"2022-blake3-chacha20-poly1305\""
         );
-        assert_eq!(wire(&CongestionControl::NewReno), "\"new_reno\"");
     }
 }

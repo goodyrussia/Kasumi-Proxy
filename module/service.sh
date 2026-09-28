@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # Launch the kasumi-proxy daemon (single binary). The daemon does its own boot
-# wait (rt_tables), sysctl locks, control socket, WS server, lifecycle, watchdog
-# and subscription auto-update.
+# wait (rt_tables), sysctl locks, control socket, WS server, lifecycle and
+# watchdog.
 MODDIR=${0%/*}
 DATADIR="/data/adb/kasumi-proxy"
 mkdir -p "$DATADIR"

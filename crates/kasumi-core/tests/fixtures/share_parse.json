@@ -7,8 +7,6 @@
         "id": "",
         "remarks": "DE Node",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {
@@ -59,8 +57,6 @@
         "id": "",
         "remarks": "XH",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {
@@ -112,8 +108,6 @@
         "id": "",
         "remarks": "EX",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {
@@ -164,8 +158,6 @@
         "id": "",
         "remarks": "GRPC",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {
@@ -222,8 +214,6 @@
         "id": "",
         "remarks": "WS",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {
@@ -278,8 +268,6 @@
         "id": "",
         "remarks": "T",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {
@@ -328,8 +316,6 @@
         "id": "",
         "remarks": "🇦🇹 23 - AT - Trojan/TLS/UTLS - 443",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {
@@ -378,8 +364,6 @@
         "id": "",
         "remarks": "VM",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {
@@ -436,8 +420,6 @@
         "id": "",
         "remarks": "GRPC-VM",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {
@@ -496,8 +478,6 @@
         "id": "",
         "remarks": "SSWS",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {
@@ -550,8 +530,6 @@
         "id": "",
         "remarks": "SSOBFS",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {
@@ -593,333 +571,6 @@
     }
   },
   {
-    "uri": "hysteria2://secret@hy.ex:443?sni=hy.ex&obfs=salamander&obfs-password=obf&mport=20000-50000&pinSHA256=AA%3DBB&insecure=1#FI%20Node",
-    "profile": {
-      "protocol": "hysteria2",
-      "meta": {
-        "id": "",
-        "remarks": "FI Node",
-        "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
-        "via": null
-      },
-      "endpoint": {
-        "address": "hy.ex",
-        "port": 443
-      },
-      "tls": {
-        "security": "tls",
-        "sni": "hy.ex",
-        "disableSni": false,
-        "fingerprint": "chrome",
-        "alpn": [],
-        "allowInsecure": true,
-        "tlsMinVersion": "",
-        "tlsMaxVersion": "",
-        "tlsCipherSuites": [],
-        "tlsCurvePreferences": [],
-        "cert": "",
-        "disableSystemRoot": false,
-        "rejectUnknownSni": false,
-        "enableSessionResumption": false,
-        "publicKey": "",
-        "shortId": "",
-        "spiderX": "",
-        "ech": "",
-        "vcn": "",
-        "pcs": "",
-        "pqv": ""
-      },
-      "password": "secret",
-      "obfsType": "salamander",
-      "obfsPassword": "obf",
-      "ports": "20000-50000",
-      "hopInterval": "",
-      "upMbps": 0,
-      "downMbps": 0,
-      "pinSha256": "AA=BB"
-    }
-  },
-  {
-    "uri": "hy2://pw@hy.ex:8443?sni=hy.ex",
-    "profile": {
-      "protocol": "hysteria2",
-      "meta": {
-        "id": "",
-        "remarks": "hy.ex",
-        "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
-        "via": null
-      },
-      "endpoint": {
-        "address": "hy.ex",
-        "port": 8443
-      },
-      "tls": {
-        "security": "tls",
-        "sni": "hy.ex",
-        "disableSni": false,
-        "fingerprint": "chrome",
-        "alpn": [],
-        "allowInsecure": false,
-        "tlsMinVersion": "",
-        "tlsMaxVersion": "",
-        "tlsCipherSuites": [],
-        "tlsCurvePreferences": [],
-        "cert": "",
-        "disableSystemRoot": false,
-        "rejectUnknownSni": false,
-        "enableSessionResumption": false,
-        "publicKey": "",
-        "shortId": "",
-        "spiderX": "",
-        "ech": "",
-        "vcn": "",
-        "pcs": "",
-        "pqv": ""
-      },
-      "password": "pw",
-      "obfsType": "",
-      "obfsPassword": "",
-      "ports": "",
-      "hopInterval": "",
-      "upMbps": 0,
-      "downMbps": 0,
-      "pinSha256": ""
-    }
-  },
-  {
-    "uri": "tuic://u-1:pw@t.ex:8443?congestion_control=bbr&udp_relay_mode=native&zero_rtt_handshake=1&sni=t.ex&alpn=h3#JP",
-    "profile": {
-      "protocol": "tuic",
-      "meta": {
-        "id": "",
-        "remarks": "JP",
-        "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
-        "via": null
-      },
-      "endpoint": {
-        "address": "t.ex",
-        "port": 8443
-      },
-      "tls": {
-        "security": "tls",
-        "sni": "t.ex",
-        "disableSni": false,
-        "fingerprint": "chrome",
-        "alpn": [
-          "h3"
-        ],
-        "allowInsecure": false,
-        "tlsMinVersion": "",
-        "tlsMaxVersion": "",
-        "tlsCipherSuites": [],
-        "tlsCurvePreferences": [],
-        "cert": "",
-        "disableSystemRoot": false,
-        "rejectUnknownSni": false,
-        "enableSessionResumption": false,
-        "publicKey": "",
-        "shortId": "",
-        "spiderX": "",
-        "ech": "",
-        "vcn": "",
-        "pcs": "",
-        "pqv": ""
-      },
-      "uuid": "u-1",
-      "password": "pw",
-      "congestionControl": "bbr",
-      "udpRelayMode": "native",
-      "zeroRtt": true,
-      "udpOverStream": false,
-      "heartbeat": ""
-    }
-  },
-  {
-    "uri": "anytls://secret@a.ex:443?sni=a.ex&alpn=h2&allowInsecure=1&pcs=pin#AT",
-    "profile": {
-      "protocol": "anytls",
-      "meta": {
-        "id": "",
-        "remarks": "AT",
-        "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
-        "via": null
-      },
-      "endpoint": {
-        "address": "a.ex",
-        "port": 443
-      },
-      "tls": {
-        "security": "tls",
-        "sni": "a.ex",
-        "disableSni": false,
-        "fingerprint": "chrome",
-        "alpn": [
-          "h2"
-        ],
-        "allowInsecure": true,
-        "tlsMinVersion": "",
-        "tlsMaxVersion": "",
-        "tlsCipherSuites": [],
-        "tlsCurvePreferences": [],
-        "cert": "",
-        "disableSystemRoot": false,
-        "rejectUnknownSni": false,
-        "enableSessionResumption": false,
-        "publicKey": "",
-        "shortId": "",
-        "spiderX": "",
-        "ech": "",
-        "vcn": "",
-        "pcs": "pin",
-        "pqv": ""
-      },
-      "password": "secret",
-      "idleSessionCheckInterval": "",
-      "idleSessionTimeout": "",
-      "minIdleSession": 0
-    }
-  },
-  {
-    "uri": "naive+quic://user:pw@n.ex:443?congestion_control=bbr&insecure-concurrency=8&sni=n.ex#NV",
-    "profile": {
-      "protocol": "naive",
-      "meta": {
-        "id": "",
-        "remarks": "NV",
-        "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
-        "via": null
-      },
-      "endpoint": {
-        "address": "n.ex",
-        "port": 443
-      },
-      "tls": {
-        "security": "tls",
-        "sni": "n.ex",
-        "disableSni": false,
-        "fingerprint": "chrome",
-        "alpn": [],
-        "allowInsecure": false,
-        "tlsMinVersion": "",
-        "tlsMaxVersion": "",
-        "tlsCipherSuites": [],
-        "tlsCurvePreferences": [],
-        "cert": "",
-        "disableSystemRoot": false,
-        "rejectUnknownSni": false,
-        "enableSessionResumption": false,
-        "publicKey": "",
-        "shortId": "",
-        "spiderX": "",
-        "ech": "",
-        "vcn": "",
-        "pcs": "",
-        "pqv": ""
-      },
-      "username": "user",
-      "password": "pw",
-      "naiveQuic": true,
-      "congestionControl": "bbr",
-      "insecureConcurrency": 8
-    }
-  },
-  {
-    "uri": "shadowtls://secret@s.ex:8443?version=3&sni=s.ex&fp=chrome#ST",
-    "profile": {
-      "protocol": "shadowtls",
-      "meta": {
-        "id": "",
-        "remarks": "ST",
-        "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
-        "via": null
-      },
-      "endpoint": {
-        "address": "s.ex",
-        "port": 8443
-      },
-      "tls": {
-        "security": "tls",
-        "sni": "s.ex",
-        "disableSni": false,
-        "fingerprint": "chrome",
-        "alpn": [],
-        "allowInsecure": false,
-        "tlsMinVersion": "",
-        "tlsMaxVersion": "",
-        "tlsCipherSuites": [],
-        "tlsCurvePreferences": [],
-        "cert": "",
-        "disableSystemRoot": false,
-        "rejectUnknownSni": false,
-        "enableSessionResumption": false,
-        "publicKey": "",
-        "shortId": "",
-        "spiderX": "",
-        "ech": "",
-        "vcn": "",
-        "pcs": "",
-        "pqv": ""
-      },
-      "version": 3,
-      "password": "secret"
-    }
-  },
-  {
-    "uri": "shadowtls://pw%40x@s.ex:443?version=2&sni=s.ex#SL",
-    "profile": {
-      "protocol": "shadowtls",
-      "meta": {
-        "id": "",
-        "remarks": "SL",
-        "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
-        "via": null
-      },
-      "endpoint": {
-        "address": "s.ex",
-        "port": 443
-      },
-      "tls": {
-        "security": "tls",
-        "sni": "s.ex",
-        "disableSni": false,
-        "fingerprint": "chrome",
-        "alpn": [],
-        "allowInsecure": false,
-        "tlsMinVersion": "",
-        "tlsMaxVersion": "",
-        "tlsCipherSuites": [],
-        "tlsCurvePreferences": [],
-        "cert": "",
-        "disableSystemRoot": false,
-        "rejectUnknownSni": false,
-        "enableSessionResumption": false,
-        "publicKey": "",
-        "shortId": "",
-        "spiderX": "",
-        "ech": "",
-        "vcn": "",
-        "pcs": "",
-        "pqv": ""
-      },
-      "version": 2,
-      "password": "pw@x"
-    }
-  },
-  {
     "uri": "wireguard://QPibxMMkZne460g8gkEbCXM1bw7Z0Hob2YmnS0NV0Xg%3D@127.0.0.1:9000?address=10.8.1.3%2F32&presharedkey=khXtV6Anbg31qus546FmJ31xytmg0%2Bp80gp3uTNS6o4%3D&reserved=0%2C0%2C0&publickey=gB5Yvngw%2FhoCgZkcMVI9%2B6t6P1H7qZPRwC%2FzwOGT%2FlI%3D&mtu=1420#sanya-wg-tunnel",
     "profile": {
       "protocol": "wireguard",
@@ -927,8 +578,6 @@
         "id": "",
         "remarks": "sanya-wg-tunnel",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {
@@ -957,8 +606,6 @@
         "id": "",
         "remarks": "my-socks",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {
@@ -977,8 +624,6 @@
         "id": "",
         "remarks": "s5",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {
@@ -997,8 +642,6 @@
         "id": "",
         "remarks": "my-http",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {
@@ -1040,8 +683,6 @@
         "id": "",
         "remarks": "my-https",
         "groupId": "g-main",
-        "subId": null,
-        "coreType": null,
         "via": null
       },
       "endpoint": {

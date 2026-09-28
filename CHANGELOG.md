@@ -1,3 +1,17 @@
+## v0.5.0 — 2026-09-28
+
+Android-module-only fork release: sing-box, the desktop (Tauri) app, subscriptions and the
+non-Xray protocols were removed; the Xray core (eichgee fork, `v1.250516.0-patch.20`) is now
+built from a pinned source archive, and the module is arm64-only.
+
+### Changes
+
+- Repo trimmed to the Magisk / KernelSU / APatch module (arm64-v8a only)
+- Core: sing-box removed; the Xray core is built from the pinned eichgee source
+- Protocols: Hysteria2, TUIC, AnyTLS, Naive and ShadowTLS removed (8 protocols remain)
+- Subscriptions removed; share links and QR import kept
+- CI/CD: module-only pipeline (core → daemon → webroot → `kasumi-proxy-module-vX.Y.Z.zip`)
+
 ## v0.4.4 — 2026-08-03
 
 ### Core updates

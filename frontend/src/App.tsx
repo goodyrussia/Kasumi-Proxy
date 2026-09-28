@@ -12,7 +12,6 @@ import { useT } from "./i18n";
 import { configureKsuWebUi, hasKsuNativeApi } from "./lib/ksu-webui";
 import { useSheetOpen } from "./lib/sheetPresence";
 import { useIsWide } from "./lib/useIsWide";
-import { useTraySync } from "./lib/useTraySync";
 import { useAppStore } from "./store/useAppStore";
 
 const Backup = lazy(() => import("./features/backup/Backup"));
@@ -20,10 +19,9 @@ const Editor = lazy(() => import("./features/editor/Editor"));
 const Logs = lazy(() => import("./features/logs/Logs"));
 const Profiles = lazy(() => import("./features/profiles/Profiles"));
 const Settings = lazy(() => import("./features/settings/Settings"));
-const Subscriptions = lazy(() => import("./features/subscriptions/Subscriptions"));
 const AppFilterPage = lazy(() => import("./features/appfilter/AppFilterPage"));
 
-type Tab = "overview" | "profiles" | "subs" | "settings";
+type Tab = "overview" | "profiles" | "settings";
 
 function LoadingScreen({ label }: { label: string }) {
   return (
@@ -39,7 +37,7 @@ function LoadingScreen({ label }: { label: string }) {
 function getInitialTab(): Tab {
   if (typeof window !== "undefined") {
     const hash = window.location.hash.replace("#", "");
-    if (hash === "profiles" || hash === "subs") return hash;
+    if (hash === "profiles") return hash;
     // Settings pages live under "settings/<page>".
     if (hash === "settings" || hash.startsWith("settings/")) return "settings";
   }
@@ -60,7 +58,6 @@ export default function App() {
   const [appFilterOpen, setAppFilterOpen] = useState(false);
   const isWide = useIsWide();
   const sheetOpen = useSheetOpen();
-  useTraySync();
 
   useEffect(() => {
     hydrate();
@@ -103,11 +100,10 @@ export default function App() {
   const navItems: Array<{
     id: Tab;
     icon: string;
-    labelKey: "nav.overview" | "nav.profiles" | "nav.subs" | "nav.settings";
+    labelKey: "nav.overview" | "nav.profiles" | "nav.settings";
   }> = [
     { id: "overview", icon: "space_dashboard", labelKey: "nav.overview" },
     { id: "profiles", icon: "dns", labelKey: "nav.profiles" },
-    { id: "subs", icon: "cloud_sync", labelKey: "nav.subs" },
     { id: "settings", icon: "tune", labelKey: "nav.settings" },
   ];
   const nativeToast = hasKsuNativeApi();
@@ -118,8 +114,6 @@ export default function App() {
       <Overview onNavigate={nav.go} onOpenLogs={nav.openLogs} onOpenBackup={nav.openBackup} />
     ) : tab === "profiles" ? (
       <Profiles onOpenEditor={nav.openEditor} />
-    ) : tab === "subs" ? (
-      <Subscriptions />
     ) : (
       <Settings
         onOpenBackup={nav.openBackup}

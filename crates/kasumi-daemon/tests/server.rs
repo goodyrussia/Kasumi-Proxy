@@ -13,8 +13,7 @@ use tokio_tungstenite::tungstenite::Message;
 use kasumi_backend::Service;
 use kasumi_backend::net::ProxyStatus;
 use kasumi_backend::platform::{
-    BackendPaths, Engine, InstalledCores, Platform, PlatformCapabilities, StartDataPath,
-    StopDataPath,
+    BackendPaths, InstalledCores, Platform, PlatformCapabilities, StartDataPath, StopDataPath,
 };
 use kasumi_core::contract::{RunState, ServiceState, WsInfo};
 
@@ -31,13 +30,10 @@ impl StubPlatform {
         std::fs::write(web.join("index.html"), b"INDEX").unwrap();
         let paths = BackendPaths {
             data_dir: d.clone(),
-            srs_dir: d.join("srs"),
             dat_dir: d.join("dat"),
             app_state: d.join("app-state.json"),
             profiles: d.join("profiles.json"),
             xray_config: d.join("xray.json"),
-            singbox_config: d.join("singbox.json"),
-            engine_file: d.join("engine"),
             run_dir: d.join("run"),
             ws_info: d.join("ws.json"),
             webroot: Some(web),
@@ -64,7 +60,6 @@ impl Platform for StubPlatform {
             upload_bytes: 0,
             download_bytes: 0,
             uptime_sec: 0,
-            engine: None,
         })
     }
     async fn capabilities(&self) -> anyhow::Result<PlatformCapabilities> {
@@ -74,7 +69,7 @@ impl Platform for StubPlatform {
             bridge: "ksu".into(),
         })
     }
-    fn core_path(&self, _engine: Engine) -> PathBuf {
+    fn core_path(&self) -> PathBuf {
         PathBuf::new()
     }
     async fn proxy_status(&self) -> anyhow::Result<ProxyStatus> {

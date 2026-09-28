@@ -8,15 +8,7 @@
 
 import { useEffect, useState } from "react";
 import { Btn, Sheet } from "../../components";
-import type {
-  CoreResolution,
-  Endpoint,
-  Meta,
-  Profile,
-  Protocol,
-  Tls,
-  Transport,
-} from "../../generated/bindings";
+import type { Endpoint, Meta, Profile, Protocol, Tls, Transport } from "../../generated/bindings";
 import { useT } from "../../i18n";
 import { bridge } from "../../lib/bridge-provider";
 import { emptyProfile, schemaFor } from "../../lib/profile-utils";
@@ -68,8 +60,6 @@ export default function Editor({
         ...next.meta,
         id: cur.meta.id,
         remarks: cur.meta.remarks,
-        subId: cur.meta.subId,
-        coreType: cur.meta.coreType,
         via: cur.meta.via,
       };
       if ("endpoint" in next && "endpoint" in cur) next.endpoint = { ...cur.endpoint };
@@ -100,23 +90,8 @@ export default function Editor({
     };
   }, [draft]);
 
-  // The core-resolution matrix lives in Rust too; resolve the draft's engine
-  // through the bridge on every edit (same pattern as the share preview). `null`
-  // until the first reply lands, which just hides the engine hint.
-  const [coreResolution, setCoreResolution] = useState<CoreResolution | null>(null);
-  useEffect(() => {
-    let alive = true;
-    bridge
-      .resolveCores([draft])
-      .then((rs) => alive && setCoreResolution(rs[0] ?? null))
-      .catch(() => alive && setCoreResolution(null));
-    return () => {
-      alive = false;
-    };
-  }, [draft]);
-
   // Which profiles the draft may dial through is a backend answer (the same chain
-  // check the config builders make), re-asked on every edit like the engine.
+  // check the config builders make), re-asked on every edit.
   const [viaIds, setViaIds] = useState<string[]>([]);
   useEffect(() => {
     let alive = true;
@@ -153,15 +128,8 @@ export default function Editor({
   const security = "tls" in draft && draft.tls ? (draft.tls.security ?? "none") : "none";
   const isReality = security === "reality";
   const isTls = security === "tls";
-  const isQuic = proto === "hysteria2" || proto === "tuic";
   const network = "transport" in draft && draft.transport ? draft.transport.kind : "tcp";
-  const needsHostPath = ["ws", "grpc", "httpupgrade", "xhttp", "h2"].includes(network);
-  const engineForced = coreResolution?.forced ?? null;
-  const engineHint = engineForced
-    ? t("editor.engineForced", { core: engineForced })
-    : coreResolution
-      ? t("editor.engineResolved", { core: coreResolution.resolved })
-      : "";
+  const needsHostPath = ["ws", "grpc", "httpupgrade", "xhttp"].includes(network);
   const mux = "muxEnabled" in draft ? !!draft.muxEnabled : false;
 
   return (
@@ -183,8 +151,6 @@ export default function Editor({
         groupOpts={groupOpts}
         viaOpts={viaOpts}
         changeProtocol={changeProtocol}
-        engineForced={engineForced}
-        engineHint={engineHint}
       />
 
       <CredentialsSection draft={draft} setRoot={setRoot} errors={errors} />
@@ -215,7 +181,6 @@ export default function Editor({
           errors={errors}
           isTls={isTls}
           isReality={isReality}
-          isQuic={isQuic}
         />
       )}
 

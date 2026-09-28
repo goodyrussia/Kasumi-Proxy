@@ -15,7 +15,6 @@ const securityMarkup = (tls: Tls) =>
       errors: {},
       isTls: true,
       isReality: false,
-      isQuic: false,
     }),
   );
 

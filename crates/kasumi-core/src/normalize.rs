@@ -36,7 +36,6 @@ fn ensure_base_group(state: &mut AppState) {
             Group {
                 id: BASE_GROUP_ID.into(),
                 name: BASE_GROUP_NAME.into(),
-                sub_id: None,
             },
         );
     }
@@ -60,7 +59,6 @@ mod tests {
         s.groups = vec![Group {
             id: "g2".into(),
             name: "Two".into(),
-            sub_id: None,
         }];
         normalize_app_state(&mut s);
         assert_eq!(s.groups[0].id, BASE_GROUP_ID);
@@ -74,7 +72,6 @@ mod tests {
         s.groups.push(Group {
             id: "g2".into(),
             name: "Two".into(),
-            sub_id: None,
         });
         normalize_app_state(&mut s);
         assert_eq!(s.groups.iter().filter(|g| g.id == BASE_GROUP_ID).count(), 1);

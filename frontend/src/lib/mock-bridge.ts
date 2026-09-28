@@ -2,9 +2,8 @@
 // src/lib/mock-bridge.ts
 // Mock implementation of the Bridge interface for dev.
 // Swaps in at import time when VITE_BRIDGE_MODE=mock (default).
-// Dev-only: share parse/build and sub-apply are light stand-ins for the Rust
-// backend (deleted with this file in Phase 6); they only need to emit nested
-// profiles so the UI renders.
+// Dev-only: share parse/build are light stand-ins for the Rust backend; they
+// only need to emit nested profiles so the UI renders.
 // ============================================================
 
 import type {
@@ -16,7 +15,6 @@ import type {
   Tls,
   Transport,
 } from "../generated/bindings";
-import { DEFAULT_CORE_BY_PROTOCOL } from "../generated/defaults";
 import { AppStateSchema } from "../generated/schemas";
 import { applyMutation } from "./apply-mutation";
 import type { AppState, Bridge, ResourceUpdateMode, ServiceStatus } from "./bridge";
@@ -44,14 +42,6 @@ function mk<P extends Protocol>(
   return base;
 }
 
-const safeRegex = (source: string): RegExp | null => {
-  try {
-    return new RegExp(source);
-  } catch {
-    return null;
-  }
-};
-
 /** Simulated state (in-memory, lost on reload) */
 let state: AppState = seedAppState();
 let serviceState: ServiceStatus = {
@@ -61,7 +51,6 @@ let serviceState: ServiceStatus = {
   downloadBytes: 0,
   uptimeSec: 0,
   core: "Xray 25.5.16",
-  engine: "xray",
   pendingRestart: false,
 };
 
@@ -72,32 +61,6 @@ function cloneServiceStatus(): ServiceStatus {
 /** Simulated ping latencies by profile ID (randomized each call) */
 function simPing(): number {
   return Math.floor(Math.random() * 200) + 10 + Math.floor(Math.random() * 150);
-}
-
-/** Simulate a subscription fetch: return a few nested profiles */
-function simFetchSub(url: string): Profile[] {
-  const tag = url.slice(0, 20);
-  return [
-    mk("vless", {
-      meta: { remarks: `Fetched #1 (${tag})` },
-      endpoint: { address: "node1.fetched.example.com", port: 443 },
-      transport: { kind: "tcp" },
-      tls: { security: "reality", sni: "www.apple.com", publicKey: "pbk-mock" },
-      root: { uuid: uid() },
-    }),
-    mk("vmess", {
-      meta: { remarks: `Fetched #2 (${tag})` },
-      endpoint: { address: "node2.fetched.example.com", port: 443 },
-      transport: { kind: "ws", path: "/vm" },
-      tls: { security: "tls" },
-      root: { uuid: uid() },
-    }),
-    mk("shadowsocks", {
-      meta: { remarks: `Fetched #3 (${tag})` },
-      endpoint: { address: "node3.fetched.example.com", port: 8388 },
-      root: { password: uid(), method: "aes-256-gcm" },
-    }),
-  ];
 }
 
 export const mockBridge: Bridge = {
@@ -161,7 +124,6 @@ export const mockBridge: Bridge = {
     return {
       bridge: "mock",
       xrayVersion: "Xray (mock)",
-      singboxVersion: "sing-box (mock)",
       tun: false,
     };
   },
@@ -270,7 +232,6 @@ ${stamp} [MOCK:${kind}] transport/internet: connection ends, reading error`);
       ...state,
       profiles: [...state.profiles],
       groups: [...state.groups],
-      subscriptions: [...state.subscriptions],
       routingRules: [...state.routingRules],
       assetFiles: [...state.assetFiles],
     });
@@ -283,35 +244,7 @@ ${stamp} [MOCK:${kind}] transport/internet: connection ends, reading error`);
     return this.readState();
   },
 
-  async fetchSubscription(url: string): Promise<Profile[]> {
-    // Simulate network delay
-    await new Promise((r) => setTimeout(r, 800));
-    return simFetchSub(url);
-  },
-
-  // Dev stand-in for the backend's server-side apply: fetch + filter + stamp +
-  // replace this subscription's profiles in the in-memory state.
-  async applySubscription(subId: string): Promise<AppState> {
-    const sub = state.subscriptions.find((x) => x.id === subId);
-    if (!sub) throw new Error(`subscription not found: ${subId}`);
-    await new Promise((r) => setTimeout(r, 800));
-    const re = sub.filter ? safeRegex(sub.filter) : null;
-    const mapped = simFetchSub(sub.url)
-      .filter((p) => !re || re.test(p.meta.remarks))
-      .map((p) => ({
-        ...p,
-        meta: { ...p.meta, subId: sub.id, groupId: sub.groupId ?? p.meta.groupId },
-      }));
-    const others = state.profiles.filter((p) => p.meta.subId !== sub.id);
-    state = { ...state, profiles: [...others, ...mapped] };
-    return this.readState();
-  },
-
-  // No backend daemon in dev, so headless sub-applies / asset refreshes never happen.
-  onSubApplied() {
-    return () => {};
-  },
-
+  // No backend daemon in dev, so headless asset refreshes never happen.
   onAssetsUpdated() {
     return () => {};
   },
@@ -344,15 +277,6 @@ ${stamp} [MOCK:${kind}] transport/internet: connection ends, reading error`);
 
   async reloadAppFilter() {
     return { ok: true };
-  },
-
-  // Dev stub: the generated per-protocol default table (no capability matrix — the
-  // real answer lives behind the backend's `resolveCores`).
-  async resolveCores(profiles: Profile[]) {
-    return profiles.map((p) => ({
-      resolved: p.meta.coreType ?? DEFAULT_CORE_BY_PROTOCOL[p.protocol],
-      forced: null,
-    }));
   },
 
   // Dev stub: every other stored profile (no loop check — the real answer lives
@@ -397,12 +321,11 @@ ${stamp} [MOCK:${kind}] transport/internet: connection ends, reading error`);
       // Keep current profiles — backups no longer include them
       state = { ...incoming, profiles: state.profiles };
     } else {
-      // merge: add profiles/groups/subs, then overwrite settings
+      // merge: add profiles/groups/rules/assets, then overwrite settings
       state = {
         ...state,
         profiles: [...state.profiles, ...incoming.profiles],
         groups: [...state.groups, ...incoming.groups],
-        subscriptions: [...state.subscriptions, ...incoming.subscriptions],
         routingRules: [...state.routingRules, ...incoming.routingRules],
         assetFiles: [...state.assetFiles, ...incoming.assetFiles],
         settings: incoming.settings,

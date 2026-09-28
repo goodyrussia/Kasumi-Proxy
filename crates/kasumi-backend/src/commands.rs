@@ -15,21 +15,16 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use kasumi_core::chain::chain_candidates;
-use kasumi_core::contract::{
-    Capabilities, CoreResolution, FetchMode, LogTarget, ServiceState, TestKind, WsInfo,
-};
-use kasumi_core::core::{forced_core, resolve_core};
+use kasumi_core::contract::{Capabilities, FetchMode, LogTarget, ServiceState, TestKind, WsInfo};
 use kasumi_core::core_config::{CoreConfig, build_core_config};
-use kasumi_core::enums::CoreEngine;
 use kasumi_core::mutate::{MutationIntent, apply_mutation};
 use kasumi_core::profile::Profile;
 use kasumi_core::share::{build_share_link, parse_share_links};
-use kasumi_core::singbox_config::apply_singbox_cache_file;
 use kasumi_core::state::{AppState, DEFAULT_LOG_ROTATE_KB, default_app_state};
 
 use crate::fs::{read_text, write_text};
 use crate::fsjson::read_json;
-use crate::net::{FetchUrlOptions, fetch_url, used_ports};
+use crate::net::used_ports;
 use crate::platform::{AppInfo, Platform};
 
 /// First port `freePorts` probes when the caller doesn't pin a start.
@@ -65,16 +60,6 @@ pub enum Command {
     /// under the state-write lock; the stateless `dispatch` rejects it.
     Mutate {
         intent: Box<MutationIntent>,
-    },
-    #[serde(rename_all = "camelCase")]
-    FetchSubscription {
-        url: String,
-        #[serde(default)]
-        mode: FetchMode,
-        #[serde(default)]
-        user_agent: Option<String>,
-        #[serde(default)]
-        allow_insecure: bool,
     },
     DownloadAsset {
         filename: String,
@@ -124,12 +109,6 @@ pub enum Command {
     BuildShareLink {
         profile: Box<Profile>,
     },
-    /// Resolve which core each profile runs on (`core::resolve_core` under the
-    /// persisted settings) plus its capability force, so the UI never re-implements
-    /// the resolution matrix. Batch: one call covers a whole profile list.
-    ResolveCores {
-        profiles: Vec<Profile>,
-    },
     /// Which stored profiles the given (possibly unsaved) profile can dial through,
     /// by `chain::chain_candidates` — the same check the config builders make, so
     /// the UI never re-implements chain validity.
@@ -165,14 +144,6 @@ pub enum Command {
         profile_id: Option<String>,
     },
     ReloadAppFilter,
-    // Fetch one subscription and apply it server-side (the same path the headless
-    // updater uses), persisting and restarting the active data-path when affected.
-    // Needs the Service's serializer + lifecycle, so the stateless `dispatch` rejects
-    // it and `Service::dispatch` runs it. Returns the new merged `AppState`.
-    #[serde(rename_all = "camelCase")]
-    ApplySubscription {
-        sub_id: String,
-    },
 }
 
 /// One reply. The tag `kind` selects the payload shape under `value`.
@@ -188,8 +159,6 @@ pub enum Response {
     Apps(Vec<AppInfo>),
     Status(ServiceState),
     WsInfo(Option<WsInfo>),
-    /// Per-profile core resolutions, in the request's profile order.
-    CoreResolutions(Vec<CoreResolution>),
     /// Profile ids, in stored order.
     ProfileIds(Vec<String>),
     /// Latency in ms (tcp-ping and real-ping); `null` when there is no result.
@@ -239,24 +208,15 @@ pub(crate) async fn build_profile_config(
         .iter()
         .find(|p| p.meta().id == id)
         .ok_or_else(|| err(format!("profile not found: {id}")))?;
-    let srs_dir = paths.srs_dir.to_str().unwrap_or("");
     let mut settings = state.settings;
     if !platform.supports_proxy_modes() {
         // A platform that always runs tun (the Android root module) must not have
-        // its tun inbound stripped by a non-tun proxyMode — e.g. one restored from
-        // a desktop backup.
+        // its tun inbound stripped by a non-tun proxyMode.
         settings.proxy_mode = kasumi_core::state::ProxyMode::Tun;
     }
-    let mut built = build_core_config(profile, &settings, &state.routing_rules, &profiles, srs_dir)
-        .map_err(err)?;
-    if built.engine == CoreEngine::SingBox {
-        apply_singbox_cache_file(
-            &mut built.config,
-            &paths.singbox_cache().to_string_lossy(),
-            &settings,
-        );
-    }
-    platform.tune_config(built.engine, &mut built.config);
+    let mut built =
+        build_core_config(profile, &settings, &state.routing_rules, &profiles).map_err(err)?;
+    platform.tune_config(&mut built.config);
     Ok(built)
 }
 
@@ -273,35 +233,6 @@ pub async fn dispatch(platform: &dyn Platform, cmd: Command) -> Result<Response,
                 .unwrap_or_else(default_app_state);
             Ok(Response::State(Box::new(state)))
         }
-        Command::FetchSubscription {
-            url,
-            mode,
-            user_agent,
-            allow_insecure,
-        } => {
-            let url = url.trim();
-            if url.is_empty() {
-                return Err(err("empty subscription URL"));
-            }
-            let proxy = platform
-                .proxy_status()
-                .await
-                .map_err(|e| err(e.to_string()))?;
-            let body = fetch_url(
-                url,
-                FetchUrlOptions {
-                    mode,
-                    proxy: Some(proxy),
-                    user_agent,
-                    allow_insecure,
-                    timeout: None,
-                },
-            )
-            .await
-            .map_err(|e| err(e.to_string()))?;
-            Ok(Response::Text(String::from_utf8_lossy(&body).into_owned()))
-        }
-
         Command::DownloadAsset {
             filename,
             url,
@@ -341,7 +272,6 @@ pub async fn dispatch(platform: &dyn Platform, cmd: Command) -> Result<Response,
             Ok(Response::Capabilities(Capabilities {
                 bridge: c.bridge,
                 xray_version: c.cores.xray.unwrap_or_default(),
-                singbox_version: c.cores.singbox.unwrap_or_default(),
                 tun: c.tun,
             }))
         }
@@ -435,22 +365,6 @@ pub async fn dispatch(platform: &dyn Platform, cmd: Command) -> Result<Response,
             Ok(Response::ProfileIds(chain_candidates(&profile, &profiles)))
         }
 
-        Command::ResolveCores { profiles } => {
-            let settings = read_json::<AppState>(&paths.app_state)
-                .await
-                .map(|s| s.settings)
-                .unwrap_or_default();
-            Ok(Response::CoreResolutions(
-                profiles
-                    .iter()
-                    .map(|p| CoreResolution {
-                        resolved: resolve_core(p, &settings),
-                        forced: forced_core(p),
-                    })
-                    .collect(),
-            ))
-        }
-
         Command::Ping { profile_id } => Ok(Response::Ping(
             crate::jobs::run_ping(platform, &profile_id).await,
         )),
@@ -469,8 +383,7 @@ pub async fn dispatch(platform: &dyn Platform, cmd: Command) -> Result<Response,
         | Command::Start { .. }
         | Command::Stop
         | Command::Restart { .. }
-        | Command::ReloadAppFilter
-        | Command::ApplySubscription { .. } => Err(err(
+        | Command::ReloadAppFilter => Err(err(
             "stateful commands must be dispatched through the Service",
         )),
     }
@@ -516,12 +429,7 @@ pub(crate) async fn persist_with_chain(
     crate::state::write_app_state(platform, next).await
 }
 
-const LOG_TARGETS: [LogTarget; 4] = [
-    LogTarget::Daemon,
-    LogTarget::Xray,
-    LogTarget::Singbox,
-    LogTarget::TunEngine,
-];
+const LOG_TARGETS: [LogTarget; 3] = [LogTarget::Daemon, LogTarget::Xray, LogTarget::TunEngine];
 
 #[cfg(test)]
 mod tests {
@@ -636,7 +544,6 @@ mod tests {
             panic!()
         };
         assert_eq!(c.xray_version, "Xray 25.5.16");
-        assert_eq!(c.singbox_version, "1.10.0");
         assert_eq!(c.bridge, "test");
         assert!(c.tun);
     }
@@ -824,68 +731,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_cores_returns_resolution_per_profile() {
-        use kasumi_core::enums::CoreEngine;
-        use kasumi_core::share::parse_share_link;
-
-        let (p, _d) = TestPlatform::new();
-        // No app-state on disk: default settings apply.
-        let profiles = vec![
-            // tuic is sing-box-only → forced.
-            parse_share_link("tuic://u:pw@t.ex:443?sni=t.ex", None).unwrap(),
-            // plain vless tcp+tls is selectable → default table (xray), no force.
-            parse_share_link("vless://u@e.x:443?type=tcp&security=tls", None).unwrap(),
-            // reality+pqv is an xray-only capability → forced.
-            parse_share_link(
-                "vless://u@e.x:443?type=tcp&security=reality&pbk=PK&sni=s&pqv=Q",
-                None,
-            )
-            .unwrap(),
-        ];
-        let Response::CoreResolutions(rs) = dispatch(&p, Command::ResolveCores { profiles })
-            .await
-            .unwrap()
-        else {
-            panic!()
-        };
-        assert_eq!(rs.len(), 3);
-        assert_eq!(rs[0].resolved, CoreEngine::SingBox);
-        assert_eq!(rs[0].forced, Some(CoreEngine::SingBox));
-        assert_eq!(rs[1].resolved, CoreEngine::Xray);
-        assert_eq!(rs[1].forced, None);
-        assert_eq!(rs[2].resolved, CoreEngine::Xray);
-        assert_eq!(rs[2].forced, Some(CoreEngine::Xray));
-    }
-
-    #[tokio::test]
-    async fn resolve_cores_honours_persisted_core_table() {
-        use kasumi_core::enums::CoreEngine;
-        use kasumi_core::profile::Protocol;
-        use kasumi_core::share::parse_share_link;
-
-        let (p, _d) = TestPlatform::new();
-        let mut state = default_app_state();
-        state
-            .settings
-            .core_by_protocol
-            .insert(Protocol::Vless, CoreEngine::SingBox);
-        write_json_atomic(&p.paths().app_state, &state)
-            .await
-            .unwrap();
-        let profiles =
-            vec![parse_share_link("vless://u@e.x:443?type=tcp&security=tls", None).unwrap()];
-        let Response::CoreResolutions(rs) = dispatch(&p, Command::ResolveCores { profiles })
-            .await
-            .unwrap()
-        else {
-            panic!()
-        };
-        // Selectable profile follows the persisted coreByProtocol table.
-        assert_eq!(rs[0].resolved, CoreEngine::SingBox);
-        assert_eq!(rs[0].forced, None);
-    }
-
-    #[tokio::test]
     async fn download_asset_rejects_unsafe_filename() {
         let (p, _d) = TestPlatform::new();
         let e = dispatch(
@@ -905,18 +750,18 @@ mod tests {
     fn command_and_response_wire_shapes() {
         // Command is internally tagged on `cmd`; fields are camelCase.
         let c: Command = serde_json::from_value(serde_json::json!({
-            "cmd": "fetchSubscription",
-            "url": "https://x",
-            "allowInsecure": true
+            "cmd": "downloadAsset",
+            "filename": "geoip.dat",
+            "url": "https://x"
         }))
         .unwrap();
         assert!(matches!(
             c,
-            Command::FetchSubscription {
-                allow_insecure: true,
+            Command::DownloadAsset {
+                filename,
                 mode: FetchMode::Auto,
                 ..
-            }
+            } if filename == "geoip.dat"
         ));
         // Response is adjacently tagged kind/value.
         let v = serde_json::to_value(Response::Ports(vec![1, 2])).unwrap();

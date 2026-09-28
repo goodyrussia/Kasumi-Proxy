@@ -1,11 +1,10 @@
 use super::*;
 use crate::fs::read_text;
 use crate::platform::{
-    BackendPaths, Engine, InstalledCores, PlatformCapabilities, StartDataPath, StopDataPath,
+    BackendPaths, InstalledCores, PlatformCapabilities, StartDataPath, StopDataPath,
 };
 use crate::testutil::sample_vless;
 use kasumi_core::contract::{RunState, ServiceState};
-use kasumi_core::enums::CoreEngine;
 use kasumi_core::state::default_app_state;
 use std::path::PathBuf;
 use std::sync::Mutex as StdMutex;
@@ -30,13 +29,10 @@ impl RecordingPlatform {
         let d = dir.path().to_path_buf();
         let paths = BackendPaths {
             data_dir: d.clone(),
-            srs_dir: d.join("srs"),
             dat_dir: d.join("dat"),
             app_state: d.join("app-state.json"),
             profiles: d.join("profiles.json"),
             xray_config: d.join("xray.json"),
-            singbox_config: d.join("singbox.json"),
-            engine_file: d.join("engine"),
             run_dir: d.join("run"),
             ws_info: d.join("ws.json"),
             webroot: None,
@@ -66,11 +62,11 @@ impl Platform for RecordingPlatform {
     fn supports_proxy_modes(&self) -> bool {
         true
     }
-    async fn set_os_proxy(&self, mode: ProxyMode, _engine: Engine, _socks_port: u16) {
+    async fn set_os_proxy(&self, mode: ProxyMode, _socks_port: u16) {
         self.log(&format!("os_proxy:{mode:?}"));
     }
     async fn start_data_path(&self, opts: StartDataPath) -> anyhow::Result<()> {
-        self.log(&format!("start:{:?}", opts.engine));
+        self.log(&format!("start:{:?}", opts.tun));
         if self.hold_start.load(Ordering::SeqCst) {
             self.entered.notify_one();
             self.release.notified().await;
@@ -96,20 +92,18 @@ impl Platform for RecordingPlatform {
             upload_bytes: 0,
             download_bytes: 0,
             uptime_sec: 0,
-            engine: running.then_some(CoreEngine::Xray),
         })
     }
     async fn capabilities(&self) -> anyhow::Result<PlatformCapabilities> {
         Ok(PlatformCapabilities {
             cores: InstalledCores {
                 xray: Some("Xray 1.0".into()),
-                singbox: None,
             },
             tun: true,
             bridge: "test".into(),
         })
     }
-    fn core_path(&self, _engine: Engine) -> PathBuf {
+    fn core_path(&self) -> PathBuf {
         PathBuf::new()
     }
     async fn proxy_status(&self) -> anyhow::Result<crate::net::ProxyStatus> {
@@ -152,11 +146,9 @@ async fn start_stops_first_then_writes_config_and_starts() {
         assert_eq!(calls[0], "stop:keep=true");
         assert!(calls.iter().any(|c| c.starts_with("start:")));
     }
-    // Config + engine marker were written.
-    assert_eq!(
-        read_text(&platform.paths.engine_file).await.as_deref(),
-        Some("xray")
-    );
+    // The built config was written.
+    let cfg = read_text(&platform.paths.xray_config).await.unwrap();
+    assert!(cfg.contains("outbounds"));
 }
 
 #[tokio::test]

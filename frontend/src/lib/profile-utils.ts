@@ -2,26 +2,21 @@
 // src/lib/profile-utils.ts
 // Thin synchronous helpers the UI needs over the generated, nested Profile
 // model (src/generated/bindings.ts): safe accessors across the protocol union,
-// core-engine resolution, the per-protocol Zod form schema, and the nested
-// `emptyProfile` factory. Heavy logic (config build, share, sub-apply) lives in
-// Rust and is reached through the bridge — these are display/edit-time reads
-// only. Mirrors `kasumi-core`'s `profile`/`core`/`mixins` accessors.
+// the per-protocol Zod form schema, and the nested `emptyProfile` factory.
+// Heavy logic (config build, share) lives in Rust and is reached through the
+// bridge — these are display/edit-time reads only. Mirrors `kasumi-core`'s
+// `profile`/`mixins` accessors.
 // ============================================================
 
 import { z } from "zod";
 import type { Profile, Protocol, Security, Transport } from "../generated/bindings";
 import { EMPTY_PROFILES } from "../generated/defaults";
 import {
-  AnytlsSchema,
   CustomSchema,
   HttpSchema,
-  Hysteria2Schema,
-  NaiveSchema,
   ShadowsocksSchema,
-  ShadowtlsSchema,
   SocksSchema,
   TrojanSchema,
-  TuicSchema,
   VlessSchema,
   VmessSchema,
   WireguardSchema,
@@ -57,7 +52,6 @@ function transportHost(t: Transport): string {
   switch (t.kind) {
     case "tcp":
     case "ws":
-    case "h2":
     case "httpupgrade":
     case "xhttp":
       return t.host ?? "";
@@ -71,7 +65,6 @@ function transportPath(t: Transport): string {
   switch (t.kind) {
     case "tcp":
     case "ws":
-    case "h2":
     case "httpupgrade":
     case "xhttp":
       return t.path ?? "";
@@ -82,7 +75,7 @@ function transportPath(t: Transport): string {
   }
 }
 
-/** Lower-cased searchable haystack for filtering (mirrors `sub_apply::profile_search_text`). */
+/** Lower-cased searchable haystack for filtering. */
 export function profileSearchText(p: Profile): string {
   const parts: string[] = [p.meta.remarks, p.protocol];
   if ("endpoint" in p) {
@@ -107,11 +100,6 @@ const PROTOCOL_SCHEMA = {
   socks: SocksSchema,
   http: HttpSchema,
   wireguard: WireguardSchema,
-  hysteria2: Hysteria2Schema,
-  tuic: TuicSchema,
-  anytls: AnytlsSchema,
-  naive: NaiveSchema,
-  shadowtls: ShadowtlsSchema,
   custom: CustomSchema,
 } as const;
 

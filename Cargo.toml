@@ -1,13 +1,11 @@
-# Rust workspace for the Tauri 2 app + the Android daemon.
-# Pure-Rust crates first; the Tauri app (src-tauri) joins once the nix devshell
-# provides the webkitgtk/tauri toolchain.
+# Rust workspace for the Android Magisk module (core + backend + daemon + codegen).
 [workspace]
 resolver = "2"
 members = [
   "crates/kasumi-core",
   "crates/kasumi-backend",
   "crates/kasumi-daemon",
-  "src-tauri",
+  "crates/kasumi-codegen",
 ]
 
 [workspace.package]

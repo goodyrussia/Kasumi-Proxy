@@ -1,11 +1,10 @@
-//! The `Service`: one owner of the data-path lifecycle, shared by both shells.
+//! The `Service`: one owner of the data-path lifecycle.
 //!
 //! It serializes lifecycle jobs through a single lock so a restart can't interleave
-//! with a concurrent start/stop, drives the headless sub- and asset-updaters, auto-starts on
+//! with a concurrent start/stop, drives the headless asset-updater, auto-starts on
 //! boot, re-pins on uplink changes, and watchdogs a dead data-path. There is no
 //! control socket — lifecycle commands are in-process calls. It also owns the
-//! status/`subApplied` event stream both
-//! transports subscribe to (desktop re-emits via Tauri, Android over WS).
+//! status event stream the daemon's transports subscribe to.
 
 mod lifecycle;
 mod status;
@@ -26,7 +25,6 @@ use kasumi_core::state::ProxyMode;
 
 use crate::commands::{self, Command, CommandError, Response};
 use crate::platform::Platform;
-use crate::sub_update;
 
 use self::lifecycle::LifecycleCmd;
 use self::status::Connectivity;
@@ -41,10 +39,8 @@ pub struct Service {
     /// each command on its own task) can't read-modify-write over each other.
     state_write: Mutex<()>,
     events: broadcast::Sender<PushFrame>,
-    /// Installed core version labels, probed once at construction.
+    /// Installed core version label, probed once at construction.
     cores: crate::platform::InstalledCores,
-    /// Per-subscription last fetch attempt (ms), for the updater's backoff.
-    sub_attempts: Mutex<HashMap<String, i64>>,
     /// Per-asset last fetch attempt (ms), for the asset updater's backoff.
     asset_attempts: Mutex<HashMap<String, i64>>,
     auto_started: AtomicBool,
@@ -77,7 +73,6 @@ impl Service {
             state_write: Mutex::new(()),
             events,
             cores,
-            sub_attempts: Mutex::new(HashMap::new()),
             asset_attempts: Mutex::new(HashMap::new()),
             auto_started: AtomicBool::new(false),
             connectivity: StdMutex::new(Connectivity::Unknown),
@@ -111,24 +106,12 @@ impl Service {
                 self.refresh_pending_restart(&state).await;
                 Ok(Response::State(Box::new(state)))
             }
-            Command::ApplySubscription { sub_id } => {
-                let state = sub_update::update_subscription(
-                    &*self.platform,
-                    self,
-                    &self.serialize,
-                    &sub_id,
-                )
-                .await
-                .map_err(CommandError)?;
-                self.emit_status().await;
-                Ok(Response::State(Box::new(state)))
-            }
             other => commands::dispatch(&*self.platform, other).await,
         }
     }
 
-    /// Spawn the daemon loops: auto-start, network re-pin, watchdog, the sub- and
-    /// asset-updaters and the 1 Hz status push. Both shells call this after construction.
+    /// Spawn the daemon loops: auto-start, network re-pin, watchdog, the
+    /// asset-updater and the 1 Hz status push.
     pub fn spawn_background(self: &Arc<Self>) {
         let this = Arc::clone(self);
         tokio::spawn(async move {
@@ -140,9 +123,7 @@ impl Service {
         });
 
         self.spawn_network_watch();
-        self.spawn_resume_watch();
         self.spawn_watchdog();
-        self.spawn_sub_updater();
         self.spawn_asset_updater();
         self.spawn_status_push();
     }

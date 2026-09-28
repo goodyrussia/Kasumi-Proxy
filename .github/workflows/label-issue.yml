@@ -29,11 +29,7 @@ jobs:
             const groups = [
               {
                 answer: field("Platform"),
-                map: [
-                  { needle: "android", label: "platform:android" },
-                  { needle: "linux", label: "platform:linux" },
-                  { needle: "windows", label: "platform:windows" },
-                ],
+                map: [{ needle: "android", label: "platform:android" }],
               },
               {
                 answer: field("Area"),
@@ -41,7 +37,6 @@ jobs:
                   { needle: "frontend", label: "frontend" },
                   { needle: "backend", label: "backend" },
                   { needle: "build", label: "ci" },
-                  { needle: "nix", label: "nix" },
                   { needle: "documentation", label: "documentation" },
                 ],
               },

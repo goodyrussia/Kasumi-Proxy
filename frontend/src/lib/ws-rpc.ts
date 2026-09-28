@@ -30,7 +30,6 @@ const pending = new Map<
   { resolve: (v: Response_Serialize) => void; reject: (e: Error) => void }
 >();
 const statusCbs = new Set<(status: unknown) => void>();
-const subAppliedCbs = new Set<(info: unknown) => void>();
 const assetsUpdatedCbs = new Set<(info: unknown) => void>();
 
 /** Resolve the daemon's WS URL: ksu.exec wsInfo in the manager WebUI, the page's
@@ -62,10 +61,6 @@ function handleMessage(ev: MessageEvent): void {
     for (const cb of statusCbs) cb(msg.value);
     return;
   }
-  if (msg.event === "subApplied") {
-    for (const cb of subAppliedCbs) cb(msg.value);
-    return;
-  }
   if (msg.event === "assetsUpdated") {
     for (const cb of assetsUpdatedCbs) cb(msg.value);
     return;
@@ -84,7 +79,7 @@ function onClose(): void {
   for (const { reject } of pending.values()) reject(new Error("connection closed"));
   pending.clear();
   // Keep the push streams alive: reconnect lazily if anyone is still listening.
-  if (statusCbs.size > 0 || subAppliedCbs.size > 0 || assetsUpdatedCbs.size > 0) {
+  if (statusCbs.size > 0 || assetsUpdatedCbs.size > 0) {
     setTimeout(() => void ensureSocket().catch(() => {}), 1000);
   }
 }
@@ -142,15 +137,6 @@ export function subscribeStatus(cb: (status: unknown) => void): () => void {
   void ensureSocket().catch(() => {});
   return () => {
     statusCbs.delete(cb);
-  };
-}
-
-/** Subscribe to the daemon's "subscription applied" push. Returns an unsubscribe. */
-export function subscribeSubApplied(cb: (info: unknown) => void): () => void {
-  subAppliedCbs.add(cb);
-  void ensureSocket().catch(() => {});
-  return () => {
-    subAppliedCbs.delete(cb);
   };
 }
 

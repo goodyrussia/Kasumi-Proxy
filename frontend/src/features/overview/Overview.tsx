@@ -8,7 +8,6 @@ import {
   AppBar,
   Btn,
   Card,
-  EngineTag,
   Icon,
   IconBtn,
   ProtoTag,
@@ -27,13 +26,12 @@ export default function Overview({
   onOpenLogs,
   onOpenBackup,
 }: {
-  onNavigate: (screen: "overview" | "profiles" | "subs" | "settings") => void;
+  onNavigate: (screen: "overview" | "profiles" | "settings") => void;
   onOpenLogs: () => void;
   onOpenBackup: () => void;
 }) {
   const profiles = useAppStore((s) => s.profiles);
   const groups = useAppStore((s) => s.groups);
-  const subs = useAppStore((s) => s.subscriptions);
   const service = useAppStore((s) => s.service);
   const downloadRate = useAppStore((s) => s.downloadRate);
   const uploadRate = useAppStore((s) => s.uploadRate);
@@ -52,7 +50,6 @@ export default function Overview({
   const removeUnreachable = useAppStore((s) => s.removeUnreachable);
   const selectBest = useAppStore((s) => s.selectBest);
   const [pingSheetOpen, setPingSheetOpen] = useState(false);
-  const updateAllSubs = useAppStore((s) => s.updateAllSubs);
   const t = useT();
 
   const recentActivity = useAppStore((s) => s.recentActivity);
@@ -71,11 +68,6 @@ export default function Overview({
     settings.routingMode !== "global" && !assetFiles.some((a) => a.lastUpdated != null);
 
   const active = profiles.find((p) => p.meta.id === activeId);
-  // Backend-resolved core of the active profile (`resolveCores` cache in the store).
-  const resolvedCore = useAppStore((s) =>
-    activeId ? (s.coreResolutions[activeId]?.resolved ?? null) : null,
-  );
-  const enabledSubs = subs.filter((s) => s.enabled).length;
   const connected = service.state === "connected";
   const noInternet = service.state === "noInternet";
   const failed = service.state === "failed";
@@ -102,8 +94,7 @@ export default function Overview({
       : connecting
         ? t("overview.connecting_btn")
         : t("overview.start");
-  const coreSummary =
-    up && service.core ? service.core : (resolvedCore ?? service.core ?? t("common.xrayCore"));
+  const coreSummary = up && service.core ? service.core : (service.core ?? t("common.xrayCore"));
 
   const now = Date.now();
   const relTime = (at: number): string => {
@@ -178,9 +169,6 @@ export default function Overview({
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
                   <ProtoTag protocol={active.protocol} />
-                  {/* While running show the engine that actually runs (PID truth
-                      from status); resolveCore is only the intent for next start. */}
-                  <EngineTag engine={(up && service.engine) || resolvedCore || "xray"} />
                   <span
                     className="mono truncate"
                     style={{ fontSize: 12.5, color: "var(--on-surface-variant)" }}
@@ -288,10 +276,10 @@ export default function Overview({
             onClick={() => onNavigate("profiles")}
           />
           <Counter
-            n={enabledSubs}
-            label={t("overview.subsCounter")}
-            icon="cloud_sync"
-            onClick={() => onNavigate("subs")}
+            n={assetFiles.length}
+            label={t("overview.assetsCounter")}
+            icon="folder_managed"
+            onClick={() => onNavigate("settings")}
           />
         </div>
 
@@ -301,11 +289,6 @@ export default function Overview({
             icon="dns"
             label={t("overview.openProfiles")}
             onClick={() => onNavigate("profiles")}
-          />
-          <QuickAction
-            icon="cloud_sync"
-            label={t("overview.updateAllSubs")}
-            onClick={updateAllSubs}
           />
           <QuickAction
             icon="speed"

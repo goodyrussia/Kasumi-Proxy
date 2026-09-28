@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # ============================================================
 # scripts/package-release.sh
-# Produce an installable Magisk module zip:
-#   1. fetch cores + build geodat2srs into bin/ (not in git)
-#   2. cross-build the Rust daemon (kasumi-proxy) per arch
+# Produce an installable Magisk module zip (Android arm64 only):
+#   1. stage the native binaries into module/bin/arm64-v8a/ (xray built from the
+#      pinned source + tun2socks + hev-socks5-tunnel; not in git)
+#   2. cross-build the Rust daemon (kasumi-proxy) for arm64
 #   3. build the React UI into webroot/
 #   4. zip the module payload
 #
-# Needs Go (geodat2srs) + the android Rust toolchain/cargo-ndk + NDK_ROOT; the
-# flake's `package-release` app wires all of these. Does not require nix.
+# Needs Go (builds the Xray core) + the Android Rust toolchain (aarch64 std
+# target + cargo-ndk + NDK_ROOT). CI wires all of these; locally the same
+# commands work outside nix.
 #
 # Usage: scripts/package-release.sh [output.zip]
 # ============================================================
@@ -20,18 +22,17 @@ cd "$ROOT"
 
 OUT="${1:-$ROOT/build/$("$ROOT/scripts/artifact-name.sh" module)}"
 
-echo "→ [1/4] Fetching cores + geodat2srs…"
-if [ ! -f "$ROOT/module/bin/arm64-v8a/xray" ] || [ ! -f "$ROOT/module/bin/arm64-v8a/geodat2srs" ] || [ "${FORCE_FETCH:-0}" = "1" ]; then
+echo "→ [1/4] Staging native binaries (xray, tun2socks, hev-socks5-tunnel)…"
+if [ ! -f "$ROOT/module/bin/arm64-v8a/xray" ] || [ "${FORCE_FETCH:-0}" = "1" ]; then
 	bash "$ROOT/scripts/fetch-binaries.sh" android
 else
-	echo "  bin/ already populated (set FORCE_FETCH=1 to re-download)"
+	echo "  bin/ already populated (set FORCE_FETCH=1 to rebuild)"
 fi
 
 echo "→ [2/4] Cross-building the Rust daemon…"
 # Always rebundled: it is our own code and must match the working tree. Needs a
-# Rust toolchain carrying the android std targets + cargo-ndk + NDK_ROOT; the
-# flake's `build-daemon-android` app wires these (nix run .#build-daemon-android,
-# or nix run .#package-release which exports NDK_ROOT).
+# Rust toolchain carrying the aarch64-linux-android std target + cargo-ndk +
+# NDK_ROOT (release.yml wires these; locally export NDK_ROOT yourself).
 bash "$ROOT/scripts/build-daemon-android.sh"
 
 echo "→ [3/4] Building the web UI → webroot/…"

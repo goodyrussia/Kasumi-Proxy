@@ -1,16 +1,14 @@
 //! Headless geosite/geoip auto-update. On its own interval the daemon re-fetches
-//! every asset file, writes it to the dat dir and rebuilds the matching `.srs`.
-//! Because both cores load geo data at startup (xray reads the `.dat`, sing-box
-//! loads local rule-sets) and cache it in memory, fresh data only takes effect on
-//! a restart — so the active core is restarted, but only when a download actually
-//! changed the file content (mirrors the `sub_update` restart-only-on-change rule).
+//! every asset file and writes it to the dat dir. Because the core loads geo data
+//! at startup (xray reads the `.dat`) and caches it in memory, fresh data only
+//! takes effect on a restart — so the active core is restarted, but only when a
+//! download actually changed the file content.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use tokio::sync::Mutex;
 
-use kasumi_core::contract::{AssetsUpdatedEvent, FetchMode};
+use kasumi_core::contract::{AssetsUpdatedEvent, FetchMode, RunState};
 use kasumi_core::state::{AssetFile, MIN_ASSET_UPDATE_INTERVAL};
 
 use crate::commands::safe_filename;
@@ -20,15 +18,9 @@ use crate::platform::Platform;
 use crate::state::read_app_state;
 use crate::updater::{self, LifecycleControl, now_ms};
 
-/// Download one asset into the dat dir and convert it, returning whether the file
-/// content actually changed (so a caller can decide whether a core restart is
-/// warranted). Shared by the `DownloadAsset` command and the headless tick.
-///
-/// The `.dat` and its `.srs` move together: a conversion failure rolls the `.dat`
-/// back to the bytes that were there before. Leaving the new `.dat` behind a failed
-/// conversion would make the *next* attempt compare equal and report "unchanged",
-/// so no restart would ever fire and the running core would stay on the old
-/// rule-sets indefinitely.
+/// Download one asset into the dat dir, returning whether the file content
+/// actually changed (so a caller can decide whether a core restart is warranted).
+/// Shared by the `DownloadAsset` command and the headless tick.
 pub async fn download_asset(
     platform: &dyn Platform,
     filename: &str,
@@ -58,28 +50,13 @@ pub async fn download_asset(
     }
 
     let path = platform.paths().dat_dir.join(filename);
-    // The previous bytes earn their memory twice: they decide whether the content
-    // actually changed, and they are the rollback below.
     let previous = tokio::fs::read(&path).await.ok();
     let changed = previous.as_deref() != Some(body.as_slice());
 
     write_bytes_atomic(&path, &body)
         .await
         .map_err(|e| e.to_string())?;
-    if let Err(e) = platform.convert_asset(filename).await {
-        restore(&path, previous.as_deref()).await;
-        return Err(e.to_string());
-    }
     Ok(changed)
-}
-
-/// Put the asset back the way it was before a failed conversion: the previous
-/// bytes, or no file at all when the download was the first one.
-async fn restore(path: &Path, previous: Option<&[u8]>) {
-    let _ = match previous {
-        Some(bytes) => write_bytes_atomic(path, bytes).await,
-        None => tokio::fs::remove_file(path).await,
-    };
 }
 
 fn is_due(asset: &AssetFile, last_attempt: Option<i64>, now: i64, interval_ms: i64) -> bool {
@@ -156,7 +133,7 @@ pub async fn tick(
         let running = platform
             .service_state()
             .await
-            .map(|s| s.engine.is_some())
+            .map(|s| s.state != RunState::Stopped)
             .unwrap_or(false);
         if running && let Some(active) = read_app_state(platform).await.and_then(|s| s.active_id) {
             log::info!("asset-update: geo data changed, restarting active core");
@@ -362,12 +339,11 @@ mod tests {
         })
         .await;
 
-        // The file landed and was converted.
+        // The file landed.
         let on_disk = tokio::fs::read(p.paths().dat_dir.join("geoip.dat"))
             .await
             .unwrap();
         assert_eq!(on_disk, b"geo-v1");
-        assert_eq!(p.converted(), vec!["geoip.dat".to_string()]);
         // First download of a file that wasn't there is a change → restart.
         assert_eq!(lc.calls(), vec![format!("restart:Some({active:?})")]);
         let after = read_app_state(&p).await.unwrap();
@@ -403,55 +379,6 @@ mod tests {
         let events = seen.lock().unwrap().clone();
         assert_eq!(events.len(), 1);
         assert!(!events[0].restarted);
-    }
-
-    #[tokio::test]
-    async fn a_failed_conversion_rolls_back_so_the_retry_still_restarts() {
-        let (p, _d) = TestPlatform::new();
-        let server = Server::start(b"geo-v1").await;
-        let active = state_with(&p, &server.url).await;
-        tokio::fs::write(p.paths().dat_dir.join("geoip.dat"), b"geo-v0")
-            .await
-            .unwrap();
-
-        // First pass: the download succeeds but the conversion fails.
-        p.fail_conversions(true);
-        let lc = RecordingLifecycle::new();
-        let mut last = HashMap::new();
-        tick(&p, &lc, &Mutex::new(()), &mut last, &|_| {}).await;
-
-        assert_eq!(server.hits(), 1);
-        // Nothing was applied: the dat is back to the old bytes, no stamp, no restart.
-        let on_disk = tokio::fs::read(p.paths().dat_dir.join("geoip.dat"))
-            .await
-            .unwrap();
-        assert_eq!(
-            on_disk, b"geo-v0",
-            "a failed conversion must roll the dat back"
-        );
-        assert!(
-            read_app_state(&p).await.unwrap().asset_files[0]
-                .last_updated
-                .is_none()
-        );
-        assert!(lc.calls().is_empty());
-
-        // Second pass, conversion healthy: the content still reads as changed, so the
-        // core is restarted rather than left on the stale rule-sets.
-        p.fail_conversions(false);
-        last.clear();
-        tick(&p, &lc, &Mutex::new(()), &mut last, &|_| {}).await;
-
-        let on_disk = tokio::fs::read(p.paths().dat_dir.join("geoip.dat"))
-            .await
-            .unwrap();
-        assert_eq!(on_disk, b"geo-v1");
-        assert_eq!(lc.calls(), vec![format!("restart:Some({active:?})")]);
-        assert!(
-            read_app_state(&p).await.unwrap().asset_files[0]
-                .last_updated
-                .is_some()
-        );
     }
 
     #[tokio::test]

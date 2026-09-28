@@ -1,24 +1,21 @@
 // ============================================================
 // src/lib/bridge-provider.ts
 // Selects the bridge implementation based on the environment.
-//  - Desktop Tauri window → tauriBridge (native IPC to the in-process backend)
 //  - Real device / daemon-served UI → wsBridge (typed WebSocket to the daemon)
 //  - Browser dev → mockBridge
-// Override with VITE_BRIDGE_MODE = "tauri" | "ksu" | "mock".
+// Override with VITE_BRIDGE_MODE = "ksu" | "mock".
 // ============================================================
 import type { Bridge } from "./bridge";
 import { getRuntimeBridgeMode } from "./ksu-webui";
 
-type BridgeMode = "tauri" | "ksu" | "mock";
+type BridgeMode = "ksu" | "mock";
 
 let loadedBridge: Bridge | null = null;
 let loadingBridge: Promise<Bridge> | null = null;
 
 function pickMode(): BridgeMode {
   const mode = import.meta.env.VITE_BRIDGE_MODE;
-  if (mode === "tauri" || mode === "mock" || mode === "ksu") return mode;
-  // The Tauri webview injects this global; prefer native IPC when present.
-  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) return "tauri";
+  if (mode === "mock" || mode === "ksu") return mode;
   return getRuntimeBridgeMode() === "mock" ? "mock" : "ksu";
 }
 
@@ -27,11 +24,9 @@ async function loadBridge(): Promise<Bridge> {
   if (!loadingBridge) {
     const mode = pickMode();
     loadingBridge =
-      mode === "tauri"
-        ? import("./tauri-bridge").then((module) => module.tauriBridge)
-        : mode === "ksu"
-          ? import("./ws-bridge").then((module) => module.wsBridge)
-          : import("./mock-bridge").then((module) => module.mockBridge);
+      mode === "ksu"
+        ? import("./ws-bridge").then((module) => module.wsBridge)
+        : import("./mock-bridge").then((module) => module.mockBridge);
     loadingBridge = loadingBridge.then((bridge) => {
       loadedBridge = bridge;
       return bridge;
@@ -103,26 +98,6 @@ export const bridge: Bridge = {
   async mutate(intent) {
     return (await loadBridge()).mutate(intent);
   },
-  async fetchSubscription(url, opts) {
-    return (await loadBridge()).fetchSubscription(url, opts);
-  },
-  async applySubscription(subId) {
-    return (await loadBridge()).applySubscription(subId);
-  },
-  onSubApplied(cb) {
-    let unsubscribed = false;
-    let dispose: (() => void) | null = null;
-
-    void loadBridge().then((impl) => {
-      if (unsubscribed) return;
-      dispose = impl.onSubApplied(cb);
-    });
-
-    return () => {
-      unsubscribed = true;
-      dispose?.();
-    };
-  },
   onAssetsUpdated(cb) {
     let unsubscribed = false;
     let dispose: (() => void) | null = null;
@@ -148,9 +123,6 @@ export const bridge: Bridge = {
   },
   async reloadAppFilter() {
     return (await loadBridge()).reloadAppFilter();
-  },
-  async resolveCores(profiles) {
-    return (await loadBridge()).resolveCores(profiles);
   },
   async chainCandidates(profile) {
     return (await loadBridge()).chainCandidates(profile);

@@ -1,7 +1,5 @@
 # Path-based PR labels (actions/labeler v5). Maps changed files to the same
-# taxonomy as the PR template's "Affected layer" + the platform:* labels the bug
-# form sets on issues. A PR can carry several (e.g. a desktop change touching both
-# the linux dir and the frontend).
+# taxonomy as the PR template's "Affected layer" labels.
 
 frontend:
   - changed-files:
@@ -15,30 +13,8 @@ backend:
   - changed-files:
       - any-glob-to-any-file:
           - "crates/**"
-          - "src-tauri/**"
           - "Cargo.toml"
           - "Cargo.lock"
-
-# Platform-specific desktop code. The privilege-separation helper keeps both OSes'
-# launch/lifecycle code in one `privhelper/` dir (the protocol, request loop and
-# RemotePlatform are shared and stay unlabelled), so the per-OS files there are
-# listed explicitly alongside the OS dir and the per-OS Tauri/installer config.
-"platform:linux":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "src-tauri/src/desktop/linux/**"
-          - "src-tauri/src/desktop/privhelper/spawn.rs"
-          - "src-tauri/src/desktop/privhelper/entry.rs"
-          - "src-tauri/tauri.linux.conf.json"
-
-"platform:windows":
-  - changed-files:
-      - any-glob-to-any-file:
-          - "src-tauri/src/desktop/windows/**"
-          - "src-tauri/src/desktop/privhelper/service.rs"
-          - "src-tauri/src/desktop/privhelper/connect.rs"
-          - "src-tauri/tauri.windows.conf.json"
-          - "src-tauri/installer-hooks.nsh"
 
 "platform:android":
   - changed-files:
@@ -50,14 +26,6 @@ ci:
   - changed-files:
       - any-glob-to-any-file:
           - ".github/**"
-
-nix:
-  - changed-files:
-      - any-glob-to-any-file:
-          - "*.nix"
-          - "**/*.nix"
-          - "flake.lock"
-          - "nix/**"
 
 documentation:
   - changed-files:

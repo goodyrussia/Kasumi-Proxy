@@ -12,17 +12,14 @@ use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 
 use kasumi_core::contract::{FetchMode, TEST_PORT_BASE, TEST_PORT_SPAN, TestKind};
-use kasumi_core::core::resolve_core;
-use kasumi_core::enums::CoreEngine;
 use kasumi_core::profile::Profile;
-use kasumi_core::singbox_config::{SingboxBuildOpts, build_singbox_config};
 use kasumi_core::state::{AppState, DEFAULT_DELAY_TEST_URL, DEFAULT_SPEED_TEST_URL};
 use kasumi_core::xray_config::build_xray_config;
 
 use crate::fs::{exists, read_text, remove_file};
 use crate::fsjson::{read_json, write_text_atomic};
 use crate::net::{FetchUrlOptions, ProxyStatus, fetch_url, lease_ports, tcp_ping};
-use crate::platform::{Engine, Platform};
+use crate::platform::Platform;
 
 struct Loaded {
     profile: Profile,
@@ -178,7 +175,6 @@ async fn log_tail(path: &std::path::Path, n: usize) -> String {
 /// can't leak the core — killing it is what ultimately unblocks the probe.
 async fn with_test_core<F, Fut>(
     platform: &dyn Platform,
-    engine: Engine,
     cfg: &str,
     port: u16,
     measure: F,
@@ -189,7 +185,7 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Option<i64>>,
 {
-    let bin = platform.core_path(engine);
+    let bin = platform.core_path();
     if !exists(&bin).await {
         log::warn!("test core binary missing: {}", bin.display());
         return Err("test core binary missing".into());
@@ -201,12 +197,8 @@ where
         return Err("failed to write test config".into());
     }
 
-    // On desktop the core runs behind the privileged helper (so it can bind the
-    // uplink and escape an active tun); it reads this config and writes this log as
-    // root. Both live in the shared data_dir, which the GUI owns, so it can still
-    // clean them up afterwards.
-    log::debug!("test core {engine:?} starting on port {port}");
-    let mut core = match platform.spawn_test_core(engine, &cfg_path, &log_path).await {
+    log::debug!("test core starting on port {port}");
+    let mut core = match platform.spawn_test_core(&cfg_path, &log_path).await {
         Ok(c) => c,
         Err(e) => {
             log::warn!("test core spawn failed on port {port}: {e}");
@@ -266,29 +258,12 @@ where
     result
 }
 
-fn build_test_config(
-    engine: Engine,
-    loaded: &Loaded,
-    port: u16,
-    srs_dir: &str,
-) -> Result<String, String> {
+fn build_test_config(loaded: &Loaded, port: u16) -> Result<String, String> {
     let mut settings = loaded.state.settings.clone();
     settings.local_socks_port = Some(port);
     settings.local_http_port = Some(port + 1);
     let rules = &loaded.state.routing_rules;
-    let value = match engine {
-        CoreEngine::SingBox => build_singbox_config(
-            &loaded.profile,
-            &settings,
-            rules,
-            &loaded.profiles,
-            SingboxBuildOpts {
-                no_tun: true,
-                srs_dir,
-            },
-        )?,
-        CoreEngine::Xray => build_xray_config(&loaded.profile, &settings, rules, &loaded.profiles)?,
-    };
+    let value = build_xray_config(&loaded.profile, &settings, rules, &loaded.profiles)?;
     serde_json::to_string(&value).map_err(|e| e.to_string())
 }
 
@@ -313,7 +288,6 @@ pub async fn run_real_ping(
     let loaded = load_profile(platform, profile_id)
         .await
         .ok_or_else(|| "profile not found".to_string())?;
-    let engine = resolve_core(&loaded.profile, &loaded.state.settings);
     // Hold a concurrency permit for the whole test (released on drop).
     let _permit = ping_limiter(loaded.state.settings.ping_concurrency as usize)
         .acquire_owned()
@@ -321,10 +295,9 @@ pub async fn run_real_ping(
         .ok();
     let lease = lease_ports(TEST_PORT_BASE, TEST_PORT_SPAN).await;
     let test_port = lease.base();
-    let srs_dir = platform.paths().srs_dir.to_string_lossy().into_owned();
     let retained =
         retained_test_log_path(&platform.paths().data_dir, profile_id, TestKind::RealPing);
-    let cfg = build_test_config(engine, &loaded, test_port, &srs_dir)?;
+    let cfg = build_test_config(&loaded, test_port)?;
     let url = loaded
         .state
         .settings
@@ -334,7 +307,6 @@ pub async fn run_real_ping(
         .unwrap_or_else(|| DEFAULT_DELAY_TEST_URL.to_owned());
     with_test_core(
         platform,
-        engine,
         &cfg,
         test_port,
         || async move {
@@ -381,16 +353,14 @@ pub async fn run_speed_test(
     let loaded = load_profile(platform, profile_id)
         .await
         .ok_or_else(|| "profile not found".to_string())?;
-    let engine = resolve_core(&loaded.profile, &loaded.state.settings);
     let _permit = speed_limiter(loaded.state.settings.speed_concurrency as usize)
         .acquire_owned()
         .await
         .ok();
     let lease = lease_ports(TEST_PORT_BASE, TEST_PORT_SPAN).await;
     let test_port = lease.base();
-    let srs_dir = platform.paths().srs_dir.to_string_lossy().into_owned();
     let retained = retained_test_log_path(&platform.paths().data_dir, profile_id, TestKind::Speed);
-    let cfg = build_test_config(engine, &loaded, test_port, &srs_dir)?;
+    let cfg = build_test_config(&loaded, test_port)?;
     let url = loaded
         .state
         .settings
@@ -400,7 +370,6 @@ pub async fn run_speed_test(
         .unwrap_or_else(|| DEFAULT_SPEED_TEST_URL.to_owned());
     with_test_core(
         platform,
-        engine,
         &cfg,
         test_port,
         || async move {

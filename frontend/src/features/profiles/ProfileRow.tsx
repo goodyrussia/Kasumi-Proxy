@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useRef } from "react";
-import { Card, EngineTag, Icon, Ping, ProtoTag, Speed, Spinner } from "../../components";
+import { Card, Icon, Ping, ProtoTag, Speed, Spinner } from "../../components";
 import type { Profile, TestKind } from "../../generated/bindings";
 import { useT } from "../../i18n";
 import { profileEndpointLabel, profileNetwork, profileSecurity } from "../../lib/profile-utils";
@@ -29,6 +29,7 @@ export function ProfileRow({
   const isPinging = useAppStore((s) => s.pinging.has(profile.meta.id));
   const isSpeedTesting = useAppStore((s) => s.speedTesting.has(profile.meta.id));
   const test = useAppStore((s) => s.testResults[profile.meta.id]);
+  const t = useT();
   // Pop the value in only when a test just finished (spinner → value), not on
   // every list mount — so opening the screen doesn't flash every row's metric.
   const wasPinging = useRef(isPinging);
@@ -39,10 +40,6 @@ export function ProfileRow({
     wasPinging.current = isPinging;
     wasSpeedTesting.current = isSpeedTesting;
   });
-  // Backend-resolved core (the `resolveCores` reply cached in the store);
-  // undefined until the first resolution lands, which just hides the tag.
-  const engine = useAppStore((s) => s.coreResolutions[profile.meta.id]?.resolved);
-  const t = useT();
 
   return (
     <Card
@@ -118,7 +115,6 @@ export function ProfileRow({
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 6 }}>
             <ProtoTag protocol={profile.protocol} />
-            {engine === "sing-box" && <EngineTag engine={engine} />}
             <span
               className="mono truncate"
               style={{

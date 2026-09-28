@@ -80,8 +80,7 @@ fn build_outbound_base(p: &Profile) -> Option<Map<String, Value>> {
             json!({ "tag": "proxy", "protocol": "http", "settings": { "servers": [server] } })
         }
         Profile::Wireguard(w) => return Some(build_wireguard_outbound(w)),
-        Profile::Hysteria2(_) => return Some(build_hysteria2_outbound(p)),
-        // tuic / anytls / naive / shadowtls / custom can't build on xray.
+        // `custom` carries only a raw config blob — nothing to build here.
         _ => return None,
     };
     let _ = ep;
@@ -121,63 +120,6 @@ fn build_wireguard_outbound(w: &crate::profile::Wireguard) -> Map<String, Value>
         .as_object()
         .cloned()
         .unwrap()
-}
-
-fn build_hysteria2_outbound(p: &Profile) -> Map<String, Value> {
-    let Profile::Hysteria2(h) = p else {
-        unreachable!()
-    };
-    let mut quic = Map::new();
-    if !h.ports.trim().is_empty() && h.ports.contains([':', '-', ',']) {
-        let interval = h
-            .hop_interval
-            .parse::<f64>()
-            .ok()
-            .filter(|v| v.is_finite() && *v >= 5.0)
-            .map(|v| {
-                // Match JS Number→String (integers print without a decimal point).
-                if v.fract() == 0.0 {
-                    format!("{}", v as i64)
-                } else {
-                    format!("{v}")
-                }
-            })
-            .unwrap_or_else(|| "30".to_string());
-        quic.insert(
-            "udpHop".into(),
-            json!({ "ports": h.ports.replace(':', "-"), "interval": interval }),
-        );
-    }
-    if h.up_mbps > 0 || h.down_mbps > 0 {
-        quic.insert("congestion".into(), "brutal".into());
-        if h.up_mbps > 0 {
-            quic.insert("brutalUp".into(), format!("{}mbps", h.up_mbps).into());
-        }
-        if h.down_mbps > 0 {
-            quic.insert("brutalDown".into(), format!("{}mbps", h.down_mbps).into());
-        }
-    } else {
-        quic.insert("congestion".into(), "bbr".into());
-    }
-    let mut finalmask = json!({ "quicParams": quic });
-    if h.obfs_type == crate::enums::Hysteria2Obfs::Salamander && !h.obfs_password.is_empty() {
-        finalmask["udp"] =
-            json!([{ "type": "salamander", "settings": { "password": h.obfs_password } }]);
-    }
-    json!({
-        "tag": "proxy", "protocol": "hysteria",
-        "settings": { "version": 2, "address": h.endpoint.address, "port": h.endpoint.port },
-        "streamSettings": {
-            "security": "tls",
-            "sockopt": {},
-            "tlsSettings": build_tls_security(p),
-            "hysteriaSettings": { "version": 2, "auth": h.password },
-            "finalmask": finalmask,
-        },
-    })
-    .as_object()
-    .cloned()
-    .unwrap()
 }
 
 // ---------- stream settings builders ----------
@@ -399,7 +341,6 @@ fn build_transport_setting(p: &Profile) -> Option<(&'static str, Value)> {
             }
             Some(("kcpSettings", Value::Object(v)))
         }
-        Transport::H2(_) | Transport::Quic(_) => None,
     }
 }
 
@@ -453,10 +394,6 @@ fn is_stream(p: &Profile) -> bool {
 /// Build the outbound `proxy` object for a profile (None if it can't run on xray).
 fn build_outbound(p: &Profile, s: &AdvancedSettings) -> Option<Value> {
     let mut outbound = build_outbound_base(p)?;
-    // hysteria2 already carries complete streamSettings.
-    if matches!(p, Profile::Hysteria2(_)) {
-        return Some(Value::Object(outbound));
-    }
 
     // TLS / Reality apply to stream protocols and http.
     if let Some(tls) = p.tls() {
@@ -651,7 +588,7 @@ fn attach_chain(
         }
         let mut hop_ob = build_outbound(hop, s).ok_or_else(|| {
             format!(
-                "proxy chain hop \"{}\" ({:?}) requires sing-box",
+                "proxy chain hop \"{}\" ({:?}) cannot be built for Xray",
                 hop.meta().remarks,
                 hop.protocol()
             )
@@ -769,8 +706,8 @@ pub fn build_xray_config(
         };
     }
 
-    let outbound =
-        build_outbound(p, s).ok_or_else(|| format!("{:?} requires sing-box", p.protocol()))?;
+    let outbound = build_outbound(p, s)
+        .ok_or_else(|| format!("no Xray outbound for protocol {:?}", p.protocol()))?;
     let po = build_profile_outbounds(p, s, routing_rules, profiles);
     let resolve = |tag: &str| -> String {
         if SPECIAL_OUTBOUND_TAGS.contains(&tag) {
@@ -914,17 +851,23 @@ mod tests {
     }
 
     #[test]
-    fn chain_with_a_hop_xray_cannot_run_is_an_error() {
-        let all = vec![
-            chained(
-                "vless://u@exit.ex:443?security=tls&sni=exit.ex",
-                "exit",
-                Some("t"),
-            ),
-            chained("tuic://u:pw@t.ex:443?sni=t.ex", "t", None),
-        ];
+    fn chain_with_a_hop_xray_cannot_dial_is_an_error() {
+        let entry = chained(
+            "vless://u@exit.ex:443?security=tls&sni=exit.ex",
+            "exit",
+            Some("t"),
+        );
+        // A `custom` hop carries only a raw blob — it can never dial, so the chain
+        // validation rejects it up front.
+        let mut hop: Profile = serde_json::from_value(serde_json::json!({
+            "protocol": "custom",
+            "meta": { "id": "t", "remarks": "T", "groupId": "g-main" }
+        }))
+        .unwrap();
+        hop.meta_mut().via = None;
+        let all = vec![entry, hop];
         let err = build_xray_config(&all[0], &AdvancedSettings::default(), &[], &all).unwrap_err();
-        assert!(err.contains("requires sing-box"), "{err}");
+        assert!(err.contains("can't be a hop"), "{err}");
     }
 
     fn sample() -> Profile {

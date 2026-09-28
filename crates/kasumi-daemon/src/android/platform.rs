@@ -7,24 +7,20 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde_json::Value;
 use tokio::sync::mpsc;
 
 use kasumi_backend::fs::{exists, read_text, remove_file, write_text};
 use kasumi_backend::fsjson::{read_data_path_state, read_json, write_data_path_state};
-use kasumi_backend::lifecycle::{
-    TunSpawn, inject_singbox_ifaces, missing_rule_sets, referenced_srs, spawn_core,
-    spawn_tun_engine, sync_geo_asset, verify_core_alive,
-};
+use kasumi_backend::lifecycle::{TunSpawn, spawn_core, spawn_tun_engine, verify_core_alive};
 use kasumi_backend::net::ProxyStatus;
 use kasumi_backend::platform::{
-    AppFilterCapability, AppInfo, BackendPaths, Engine, InstalledCores, Platform,
-    PlatformCapabilities, StartDataPath, StopDataPath,
+    AppFilterCapability, AppInfo, BackendPaths, InstalledCores, Platform, PlatformCapabilities,
+    StartDataPath, StopDataPath,
 };
-use kasumi_backend::proc::{kill_if_running, pid_matches_any, pid_matches_bin, read_pidfile};
+use kasumi_backend::proc::{kill_if_running, pid_matches_bin, read_pidfile};
 use kasumi_core::contract::{RunState, ServiceState};
 use kasumi_core::data_path_state::{DataPathState, TunSelection};
-use kasumi_core::enums::{CoreEngine, TunEngine};
+use kasumi_core::enums::TunEngine;
 use kasumi_core::state::{
     AdvancedSettings, AppState, DEFAULT_LOCAL_HTTP_PORT, DEFAULT_LOCAL_SOCKS_PORT, force_socks_port,
 };
@@ -32,14 +28,13 @@ use kasumi_core::tun::{TUN_IPV4, TUN_IPV6, TUN2_IPV4, TUN2_IPV6, TunOptions};
 
 use super::network::run_watcher;
 use super::paths::{
-    CORE_BINS, DATA_PATH_STATE_FILE, DATADIR, ENGINE_FILE, GEODAT2SRS_BIN, HEV_BIN, HEV_CONFIG,
-    HEV2_CONFIG, IP, PIDFILE, RUN_DIR, SINGBOX_BIN, SINGBOX_BRIDGE_CONFIG, SINGBOX_BRIDGE2_CONFIG,
+    DATA_PATH_STATE_FILE, DATADIR, HEV_BIN, HEV_CONFIG, HEV2_CONFIG, IP, PIDFILE, RUN_DIR,
     TUN_IFACE_FILE, TUN2_IFACE_FILE, TUN2SOCKS_BIN, TUN2SOCKS_CONFIG, TUN2SOCKS_PIDFILE,
     TUN2SOCKS2_CONFIG, TUN2SOCKS2_PIDFILE, XRAY_BIN, backend_paths,
 };
 use super::routing::{
-    Action, AppFilter, FWMARK, RoutingState, apply_external_tun_routing, apply_strict_carveouts,
-    clear_routing_rules, has_force_proxy, protect_local_ports, reload_app_filter_rules,
+    Action, AppFilter, FWMARK, RoutingState, apply_external_tun_routing, clear_routing_rules,
+    has_force_proxy, protect_local_ports, reload_app_filter_rules,
 };
 use super::sysctl::{lock_tun_iface, setup_sysctl_locks};
 use super::{run_out, silent};
@@ -62,35 +57,19 @@ impl Default for AndroidPlatform {
     }
 }
 
-fn core_bin(engine: CoreEngine) -> &'static str {
-    match engine {
-        CoreEngine::SingBox => SINGBOX_BIN,
-        CoreEngine::Xray => XRAY_BIN,
-    }
-}
-
-fn core_bins() -> Vec<String> {
-    CORE_BINS.iter().map(|s| s.to_string()).collect()
-}
-
-/// External-TUN helper binary for `tun`. `SingboxTun` here is a *sidecar* sing-box
-/// fronting a non-sing-box core (the native sing-box path never reaches the external
-/// bring-up), so its binary is sing-box itself. The single place the daemon maps an
+/// External-TUN helper binary for `tun`. The single place the daemon maps an
 /// engine to a binary.
 fn tun_helper_bin(tun: TunEngine) -> &'static str {
     match tun {
         TunEngine::Hev => HEV_BIN,
-        TunEngine::SingboxTun => SINGBOX_BIN,
         TunEngine::Tun2socks => TUN2SOCKS_BIN,
     }
 }
 
-/// The config file an external engine writes at bring-up: tun2socks'/hev's YAML or
-/// the sidecar sing-box's JSON, per tun (the `2` variant is the force-proxy tun).
+/// The config file an external engine writes at bring-up: tun2socks'/hev's YAML,
+/// per tun (the `2` variant is the force-proxy tun).
 fn tun_cfg_path(tun: TunEngine, force: bool) -> &'static str {
     match (tun, force) {
-        (TunEngine::SingboxTun, false) => SINGBOX_BRIDGE_CONFIG,
-        (TunEngine::SingboxTun, true) => SINGBOX_BRIDGE2_CONFIG,
         (TunEngine::Tun2socks, false) => TUN2SOCKS_CONFIG,
         (TunEngine::Tun2socks, true) => TUN2SOCKS2_CONFIG,
         (TunEngine::Hev, false) => HEV_CONFIG,
@@ -98,25 +77,15 @@ fn tun_cfg_path(tun: TunEngine, force: bool) -> &'static str {
     }
 }
 
-/// The sing-box tun stack wire value from settings (`"gvisor"`/`"system"`/`"mixed"`), for the
-/// sidecar sing-box bridge config. Defaults to gvisor — the root-binary path needs it.
-async fn singbox_stack() -> String {
-    read_settings()
-        .await
-        .and_then(|s| serde_json::to_value(s.singbox_stack).ok())
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "gvisor".into())
-}
-
-/// The external TUN engine the *running* data-path uses, or `None` for a native
-/// sing-box tun (or when no document is recorded). A lookup on the recorded document
+/// The external TUN engine the *running* data-path uses, or `None` when no
+/// document is recorded. A lookup on the recorded document
 /// ([`DataPathState::external_tun`]); the daemon maps the result via [`tun_helper_bin`].
 async fn running_tun_engine() -> Option<TunEngine> {
     read_state().await?.external_tun()
 }
 
 /// Helper binary a teardown/watchdog match targets for the running data-path —
-/// tun2socks by default, a harmless guard for a native tun with no helper pid.
+/// tun2socks by default, a harmless guard when nothing is recorded.
 async fn running_helper_bin() -> &'static str {
     running_tun_engine()
         .await
@@ -203,24 +172,17 @@ async fn fresh_iface(file: &str) -> String {
     name
 }
 
-fn core_files(engine: CoreEngine) -> (&'static str, String, String) {
-    if engine == CoreEngine::SingBox {
-        (
-            SINGBOX_BIN,
-            format!("{DATADIR}/singbox.json"),
-            format!("{DATADIR}/singbox.log"),
-        )
-    } else {
-        (
-            XRAY_BIN,
-            format!("{DATADIR}/config.json"),
-            format!("{DATADIR}/xray.log"),
-        )
-    }
+/// The core's binary, config and log paths.
+fn core_files() -> (&'static str, String, String) {
+    (
+        XRAY_BIN,
+        format!("{DATADIR}/config.json"),
+        format!("{DATADIR}/xray.log"),
+    )
 }
 
-async fn core_version(engine: CoreEngine) -> Option<String> {
-    let bin = core_bin(engine);
+async fn core_version() -> Option<String> {
+    let bin = XRAY_BIN;
     if !exists(bin).await {
         return None;
     }
@@ -252,7 +214,6 @@ async fn bring_up_tun_helper(
     cfg_path: &str,
     pidfile: &str,
     log_name: &str,
-    stack: &str,
     opts: &TunOptions,
 ) -> anyhow::Result<()> {
     let log = format!("{DATADIR}/{log_name}");
@@ -265,7 +226,6 @@ async fn bring_up_tun_helper(
         log_path: Path::new(&log),
         fwmark: Some(FWMARK),
         cfg_path: Path::new(cfg_path),
-        stack,
         opts,
     };
     let child = spawn_tun_engine(tun, &spawn)
@@ -287,7 +247,7 @@ async fn bring_up_tun_helper(
 
 /// External-tun data-path bring-up: a userspace tun bridged to the core's SOCKS via
 /// the chosen TUN engine, plus per-app routing (and a second tun for force-proxy
-/// apps). A native sing-box tun needs none of this — it auto_routes its own tun.
+/// apps).
 async fn bring_up_external_tun(
     tun: TunEngine,
     socks_port: u16,
@@ -295,8 +255,6 @@ async fn bring_up_external_tun(
 ) -> anyhow::Result<()> {
     let helper_bin = tun_helper_bin(tun);
     let filter = read_app_filter().await;
-    // The sidecar sing-box (SingboxTun engine) reads this; other engines ignore it.
-    let stack = singbox_stack().await;
     let tun_iface = match read_iface(TUN_IFACE_FILE).await {
         Some(x) => x,
         None => fresh_iface(TUN_IFACE_FILE).await,
@@ -314,7 +272,6 @@ async fn bring_up_external_tun(
             tun_cfg_path(tun, false),
             TUN2SOCKS_PIDFILE,
             "tun-engine.log",
-            &stack,
             opts,
         )
         .await?;
@@ -336,7 +293,6 @@ async fn bring_up_external_tun(
                 tun_cfg_path(tun, true),
                 TUN2SOCKS2_PIDFILE,
                 "tun-engine2.log",
-                &stack,
                 opts,
             )
             .await?;
@@ -371,7 +327,6 @@ async fn fail(reason: &str) -> anyhow::Result<()> {
 }
 
 async fn start_inner(
-    engine: CoreEngine,
     tun: TunEngine,
     tun_opts: &TunOptions,
     bin: &str,
@@ -386,56 +341,22 @@ async fn start_inner(
         return fail("config missing").await;
     }
 
-    // SingboxTun = sing-box owns its native tun; any other engine fronts a
-    // socks-only core with an external userspace tun.
-    let external = tun != TunEngine::SingboxTun;
-
-    if engine == CoreEngine::SingBox {
-        // Generate/keep only the .srs this config references (needed even when
-        // sing-box runs socks-only — its route rules still reference rule-sets).
-        let cfg_text = read_text(cfg).await.unwrap_or_default();
-        let needed = referenced_srs(&cfg_text);
-        let geo = Path::new(GEODAT2SRS_BIN);
-        let dat = Path::new(DATADIR);
-        sync_geo_asset("geoip", dat, dat, geo, &needed).await;
-        sync_geo_asset("geosite", dat, dat, geo, &needed).await;
-        if !missing_rule_sets(&cfg_text).await.is_empty() {
-            return fail("missing rule_set assets").await;
-        }
-        // Only the native tun has tun inbounds to name; socks-only has none.
-        if !external {
-            inject_singbox_ifaces(
-                Path::new(cfg),
-                Path::new(TUN_IFACE_FILE),
-                Path::new(TUN2_IFACE_FILE),
-            )
-            .await?;
-        }
-    }
-
     // stopDataPath always runs before a start/restart (Service), so the pidfile is
-    // clean here — that teardown is what fixes engine-switch orphans.
+    // clean here.
     let child = spawn_core(bin, cfg, Path::new(log), DATADIR, false).await?;
     let core_pid = child.id().unwrap_or(0) as i32;
     let _ = write_text(PIDFILE, &core_pid.to_string()).await;
 
-    // An external tun engine needs a userspace tun + helper + manual routing;
-    // a native sing-box auto_routes its own tun.
-    if external {
-        bring_up_external_tun(tun, socks_port, tun_opts).await?;
-    } else if read_app_filter().await.strict {
-        // sing-box kill-switch carve-outs so the device stays reachable.
-        apply_strict_carveouts().await;
-    }
+    // The core is socks-only: bring up a userspace tun bridged to its SOCKS via
+    // the chosen TUN engine plus per-app routing.
+    bring_up_external_tun(tun, socks_port, tun_opts).await?;
 
     if !verify_core_alive(core_pid, bin, 6, Duration::from_millis(250)).await {
         return fail(&format!("core exited on startup — see {log}")).await;
     }
 
-    // Shield local proxy ports from bypass-mode apps (both engines). Deferred until
-    // the core is up so our iptables don't contend with sing-box's system-stack
-    // `auto_redirect`, which installs its own iptables during startup and shells
-    // `iptables` without `-w` — a shared xtables.lock race would fail its start.
+    // Shield local proxy ports from bypass-mode apps. Deferred until the core is up
+    // so our iptables don't contend with the tun helper's own xtables setup.
     protect_local_ports(
         Action::Add,
         &read_app_filter().await,
@@ -473,21 +394,6 @@ async fn iface_traffic(iface: Option<&str>) -> (u64, u64) {
         return (rx, tx);
     }
     (0, 0)
-}
-
-/// Which core is actually running (PID truth), or `None`.
-async fn running_engine() -> Option<CoreEngine> {
-    let pid = read_pidfile(PIDFILE).await;
-    if pid <= 0 {
-        return None;
-    }
-    if pid_matches_bin(pid, XRAY_BIN).await {
-        return Some(CoreEngine::Xray);
-    }
-    if pid_matches_bin(pid, SINGBOX_BIN).await {
-        return Some(CoreEngine::SingBox);
-    }
-    None
 }
 
 #[async_trait]
@@ -531,7 +437,6 @@ impl Platform for AndroidPlatform {
         // `mode` is ignored: this platform reports no proxy-mode support, so it is
         // always normalized to tun upstream.
         let StartDataPath {
-            engine,
             tun,
             tun_opts,
             socks_port,
@@ -540,7 +445,6 @@ impl Platform for AndroidPlatform {
         // Record the bring-up (no started_at yet); this platform is always tun mode.
         write_state(&DataPathState {
             run: RunState::Connecting,
-            engine: Some(engine),
             tun: TunSelection::Engine(tun),
             socks_port,
             ..Default::default()
@@ -548,8 +452,8 @@ impl Platform for AndroidPlatform {
         .await;
         ensure_tun_node().await;
 
-        let (bin, cfg, log) = core_files(engine);
-        if let Err(e) = start_inner(engine, tun, &tun_opts, bin, &cfg, &log, socks_port).await {
+        let (bin, cfg, log) = core_files();
+        if let Err(e) = start_inner(tun, &tun_opts, bin, &cfg, &log, socks_port).await {
             // Roll back the half-built data-path so a failed start leaves no orphans.
             let already_failed = read_state()
                 .await
@@ -579,9 +483,7 @@ impl Platform for AndroidPlatform {
                 .unwrap_or(DEFAULT_LOCAL_SOCKS_PORT),
             http_port: http_port().await,
         };
-        // Stop the core first, gracefully: a sing-box auto_route core removes its own
-        // ip rules + tun on shutdown. Doing this before clear_routing_rules (which
-        // would delete the tun out from under it) lets that self-cleanup run.
+        // Stop the core first, gracefully, then clear our routing.
         kill_if_running(read_pidfile(PIDFILE).await, None, PIDFILE, true).await;
         clear_routing_rules(&rs).await;
         remove_file(TUN_IFACE_FILE).await;
@@ -631,23 +533,21 @@ impl Platform for AndroidPlatform {
             download_bytes: rx,
             upload_bytes: tx,
             uptime_sec,
-            engine: running_engine().await,
         })
     }
 
     async fn capabilities(&self) -> anyhow::Result<PlatformCapabilities> {
-        let xray = core_version(CoreEngine::Xray).await;
-        let singbox = core_version(CoreEngine::SingBox).await;
+        let xray = core_version().await;
         let tun = exists("/dev/net/tun").await;
         Ok(PlatformCapabilities {
-            cores: InstalledCores { xray, singbox },
+            cores: InstalledCores { xray },
             tun,
             bridge: "ksu".into(),
         })
     }
 
-    fn core_path(&self, engine: Engine) -> PathBuf {
-        PathBuf::from(core_bin(engine))
+    fn core_path(&self) -> PathBuf {
+        PathBuf::from(XRAY_BIN)
     }
 
     async fn proxy_status(&self) -> anyhow::Result<ProxyStatus> {
@@ -657,7 +557,7 @@ impl Platform for AndroidPlatform {
             .filter(|&p| p != 0)
             .unwrap_or(DEFAULT_LOCAL_SOCKS_PORT);
         let pid = read_pidfile(PIDFILE).await;
-        let running = pid > 0 && pid_matches_any(pid, &core_bins()).await;
+        let running = pid > 0 && pid_matches_bin(pid, XRAY_BIN).await;
         let http = http_port().await;
         Ok(ProxyStatus {
             running,
@@ -665,52 +565,6 @@ impl Platform for AndroidPlatform {
             http_port: http,
             force_port: force_socks_port(port, http),
         })
-    }
-
-    // No convert_asset: a downloaded geoip/geosite.dat is converted to .srs lazily
-    // on the next sing-box start (sync_geo_asset regenerates on the .dat change),
-    // only for the categories the config uses.
-
-    fn tune_config(&self, engine: Engine, config: &mut Value) {
-        if engine != CoreEngine::SingBox {
-            return;
-        }
-        // Android specifics the neutral builder must not assume, so they live here:
-        // - The sing-box "system" stack can't grab tun connections in this
-        //   root-binary data-path without sing-box's own nftables output redirect,
-        //   which only catches network-bound sockets when strict_route is on.
-        //   "mixed" runs TCP on that same system stack, so it needs both too.
-        //   (gvisor needs neither.)
-        // - Root (uid 0) must bypass the tun: the daemon and the core itself run as
-        //   root, and this per-uid policy model spares root instead of marking
-        //   sockets. Prepended to every capture-all tun (one with an `include_uid`
-        //   allowlist can't capture root in the first place). Idempotent — a
-        //   config that already excludes root is left as-is.
-        if let Some(inbounds) = config.get_mut("inbounds").and_then(|v| v.as_array_mut()) {
-            for ib in inbounds {
-                if ib.get("type").and_then(Value::as_str) != Some("tun") {
-                    continue;
-                }
-                if matches!(
-                    ib.get("stack").and_then(Value::as_str),
-                    Some("system" | "mixed")
-                ) {
-                    ib["auto_redirect"] = Value::Bool(true);
-                    ib["strict_route"] = Value::Bool(true);
-                }
-                if ib.get("include_uid").is_none() {
-                    let mut uids = ib
-                        .get("exclude_uid")
-                        .and_then(Value::as_array)
-                        .cloned()
-                        .unwrap_or_default();
-                    if !uids.iter().any(|v| v.as_i64() == Some(0)) {
-                        uids.insert(0, Value::from(0i64));
-                        ib["exclude_uid"] = Value::Array(uids);
-                    }
-                }
-            }
-        }
     }
 
     fn watch_network_change(&self) -> Option<mpsc::Receiver<()>> {
@@ -721,15 +575,14 @@ impl Platform for AndroidPlatform {
 
     async fn data_path_healthy(&self) -> Option<bool> {
         let core_pid = read_pidfile(PIDFILE).await;
-        if !(core_pid > 0 && pid_matches_any(core_pid, &core_bins()).await) {
+        if !(core_pid > 0 && pid_matches_bin(core_pid, XRAY_BIN).await) {
             return Some(false);
         }
-        // An external-tun data-path also relies on its tun helper; a native sing-box
-        // runs the tun itself. When the data-path is external, the helper pid must be
+        // The data-path also relies on its tun helper: the helper pid must be
         // present AND alive — a missing pidfile (helper never spawned, e.g. its
         // binary absent) is unhealthy, not healthy, so the watchdog rebuilds it
         // instead of leaving traffic black-holed in an unbridged tun. (One marker
-        // read resolves both external-ness and the binary to match.)
+        // read resolves both the engine and the binary to match.)
         if let Some(tun) = running_tun_engine().await {
             let t = read_pidfile(TUN2SOCKS_PIDFILE).await;
             if !(t > 0 && pid_matches_bin(t, tun_helper_bin(tun)).await) {
@@ -774,19 +627,10 @@ impl AppFilterCapability for AndroidPlatform {
 
     async fn reload_app_filter(&self) -> anyhow::Result<()> {
         let pid = read_pidfile(PIDFILE).await;
-        if !(pid > 0 && pid_matches_any(pid, &core_bins()).await) {
+        if !(pid > 0 && pid_matches_bin(pid, XRAY_BIN).await) {
             return Ok(());
         }
-        // sing-box bakes the filter into its config and needs a restart (the Service
-        // handles that); only xray reloads live here.
-        if read_text(ENGINE_FILE)
-            .await
-            .map(|s| s.trim().to_string())
-            .as_deref()
-            == Some("sing-box")
-        {
-            return Ok(());
-        }
+        // xray reloads per-uid rules live: no restart needed.
         reload_app_filter_rules(&read_app_filter().await).await;
         Ok(())
     }
@@ -805,66 +649,10 @@ mod tests {
     }
 
     #[test]
-    fn core_files_pick_engine_paths() {
-        let (bin, cfg, log) = core_files(CoreEngine::Xray);
+    fn core_files_are_xray_paths() {
+        let (bin, cfg, log) = core_files();
         assert_eq!(bin, XRAY_BIN);
         assert!(cfg.ends_with("config.json"));
         assert!(log.ends_with("xray.log"));
-        let (bin, cfg, _) = core_files(CoreEngine::SingBox);
-        assert_eq!(bin, SINGBOX_BIN);
-        assert!(cfg.ends_with("singbox.json"));
-    }
-
-    #[test]
-    fn tune_config_excludes_root_from_capture_all_tuns() {
-        let platform = AndroidPlatform::new();
-        // A neutral build: gvisor main tun with app-filter bypass uids, plus a
-        // force tun with an include_uid allowlist.
-        let mut cfg = serde_json::json!({ "inbounds": [
-            { "type": "tun", "tag": "tun-in", "stack": "gvisor",
-              "exclude_uid": [10001] },
-            { "type": "tun", "tag": "tun-force", "stack": "gvisor",
-              "include_uid": [10002] },
-            { "type": "mixed", "tag": "socks-in" },
-        ] });
-        platform.tune_config(CoreEngine::SingBox, &mut cfg);
-        // Root heads the exclusion of the capture-all tun (the daemon and core run
-        // as root); the allowlisted force tun and non-tun inbounds are untouched.
-        assert_eq!(
-            cfg["inbounds"][0]["exclude_uid"],
-            serde_json::json!([0, 10001])
-        );
-        assert!(cfg["inbounds"][1].get("exclude_uid").is_none());
-        assert!(cfg["inbounds"][2].get("exclude_uid").is_none());
-        // Tuning is idempotent: a second pass doesn't duplicate the root exclusion.
-        platform.tune_config(CoreEngine::SingBox, &mut cfg);
-        assert_eq!(
-            cfg["inbounds"][0]["exclude_uid"],
-            serde_json::json!([0, 10001])
-        );
-
-        // A capture-all tun without any app filter still gets the root exclusion.
-        let mut cfg = serde_json::json!({ "inbounds": [
-            { "type": "tun", "tag": "tun-in", "stack": "gvisor" },
-        ] });
-        platform.tune_config(CoreEngine::SingBox, &mut cfg);
-        assert_eq!(cfg["inbounds"][0]["exclude_uid"], serde_json::json!([0]));
-
-        // The system and mixed stacks (kernel TCP) additionally need sing-box's own
-        // output redirect.
-        for stack in ["system", "mixed"] {
-            let mut cfg = serde_json::json!({ "inbounds": [
-                { "type": "tun", "tag": "tun-in", "stack": stack },
-            ] });
-            platform.tune_config(CoreEngine::SingBox, &mut cfg);
-            assert_eq!(cfg["inbounds"][0]["auto_redirect"], true, "{stack}");
-            assert_eq!(cfg["inbounds"][0]["strict_route"], true, "{stack}");
-            assert_eq!(cfg["inbounds"][0]["exclude_uid"], serde_json::json!([0]));
-        }
-
-        // Xray configs pass through untouched.
-        let mut cfg = serde_json::json!({ "inbounds": [{ "type": "tun" }] });
-        platform.tune_config(CoreEngine::Xray, &mut cfg);
-        assert!(cfg["inbounds"][0].get("exclude_uid").is_none());
     }
 }

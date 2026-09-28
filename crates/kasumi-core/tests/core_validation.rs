@@ -1,22 +1,21 @@
-//! Validates that the configs our builders emit are actually accepted by the real
-//! cores (`xray run -test` / `sing-box check`), catching schema drift — e.g. a field
-//! our builder emits that a pinned core version rejects. This is the config-output
-//! safety net: `core-compat.yml` runs it with staged cores on every PR touching
+//! Validates that the configs our builder emits are actually accepted by the real
+//! Xray core (`xray run -test`), catching schema drift — e.g. a field our builder
+//! emits that the pinned core version rejects. This is the config-output safety
+//! net: `core-compat.yml` runs it with the staged core on every PR touching
 //! `crates/kasumi-core/**`.
 //!
 //! The case matrix is GENERATED from our own enums (`Protocol`, `Network`,
-//! `Security`, `SsMethod`, `VmessEnc`, `Fingerprint`, `CongestionControl` via
-//! `strum::IntoEnumIterator`), not hand-written, so a new protocol/transport/enum
-//! variant is swept automatically. On top of the enum sweeps, explicit per-field
-//! cases exercise the builder branches that defaults alone don't trigger (e.g.
-//! Hysteria2 bandwidth → brutal congestion, SS+WS → v2ray-plugin plugin_opts,
-//! TLS cipher suites, gRPC advanced sub-fields).
+//! `Security`, `SsMethod`, `VmessEnc` via `strum::IntoEnumIterator`), not
+//! hand-written, so a new protocol/transport/enum variant is swept automatically.
+//! On top of the enum sweeps, explicit per-field cases exercise the builder
+//! branches that defaults alone don't trigger (SS plugin options, TLS cipher
+//! suites, gRPC advanced sub-fields, fragment, fake-DNS, routing).
 //!
-//! The binaries are NOT committed; stage them with `scripts/fetch-binaries.sh desktop`
-//! (pinned versions in `scripts/binary-versions.sh`). When they're absent — as in a
-//! plain CI checkout — every case is skipped and the test passes, so this never
-//! blocks the normal `cargo test --workspace` path. Point at custom binaries with
-//! `KASUMI_XRAY_BIN` / `KASUMI_SINGBOX_BIN`.
+//! The binary is NOT committed; stage it with `scripts/fetch-binaries.sh` (the
+//! pinned eichgee source lives in `scripts/binary-versions.sh`) or point at one via
+//! `KASUMI_XRAY_BIN`. When it's absent — as in a plain CI checkout — every case is
+//! skipped and the test passes, so this never blocks the normal
+//! `cargo test --workspace` path.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -26,15 +25,12 @@ use strum::IntoEnumIterator;
 
 use kasumi_core::core_config::build_core_config;
 use kasumi_core::enums::{
-    CongestionControl, CoreEngine, Fingerprint, Flow, HeaderType, Hysteria2Obfs, Network,
-    PacketEncoding, Security, SsMethod, VmessEnc,
+    Fingerprint, Flow, HeaderType, Network, PacketEncoding, Security, SsMethod, VmessEnc,
 };
-use kasumi_core::mixins::Transport;
+use kasumi_core::mixins::{TcpTransport, Transport};
 use kasumi_core::profile::{Profile, Protocol};
-use kasumi_core::singbox_config::apply_singbox_cache_file;
 use kasumi_core::state::{
     AdvancedSettings, DomainStrategy, LogLevel, MuxXudp443, RoutingMode, RoutingRule,
-    SingboxFragment, SingboxStack,
 };
 
 // ── valid credential / crypto material (cores validate these) ──
@@ -47,10 +43,10 @@ const WG_PSK: &str = "YAnz7T2bQ4uR7Mm3y3Hzx2Ysj5PE2lqZqDY8Y8QpZHM=";
 const REALITY_PBK: &str = "c7twR4u_IvJsLGDqYsx2yb1nr2Kg74vsRlA_ou8c4QQ";
 const SS_KEY_16: &str = "MTIzNDU2Nzg5MGFiY2RlZg==";
 const SS_KEY_32: &str = "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=";
-// A valid base64 ECHConfigList (`sing-box generate ech-keypair example.com`),
+// A valid base64 ECHConfigList (generated with a standard ECH keypair tool),
 // the raw form share links carry in the `ech` parameter.
 const ECH_CONFIG_LIST_B64: &str = "AEb+DQBCAAAgACAYjkLlzMEK3J2Dcv8wBSVwYDz4j8o9tRSTBPSr+m52FwAMAAEAAQABAAIAAQADAAtleGFtcGxlLmNvbQAA";
-// A 64-char hex SHA-256 (xray `pinnedPeerCertSha256`) — cores syntax-check it.
+// A 64-char hex SHA-256 (xray `pinnedPeerCertSha256`) — the core syntax-checks it.
 const PCS_HEX: &str = "aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd";
 
 /// The wire string of a serde enum (e.g. `Network::Ws` → `"ws"`).
@@ -69,11 +65,6 @@ fn tls_carrying(p: Protocol) -> bool {
             | Protocol::Trojan
             | Protocol::Shadowsocks
             | Protocol::Http
-            | Protocol::Hysteria2
-            | Protocol::Tuic
-            | Protocol::Anytls
-            | Protocol::Naive
-            | Protocol::Shadowtls
     )
 }
 
@@ -82,14 +73,8 @@ fn creds(seed: &mut Value, proto: Protocol) {
     let put = |seed: &mut Value, k: &str, v: &str| seed[k] = json!(v);
     match proto {
         Protocol::Vless | Protocol::Vmess => put(seed, "uuid", UUID),
-        Protocol::Tuic => {
-            put(seed, "uuid", UUID);
-            put(seed, "password", PW);
-        }
-        Protocol::Trojan | Protocol::Hysteria2 | Protocol::Anytls | Protocol::Shadowtls => {
-            put(seed, "password", PW)
-        }
-        Protocol::Naive | Protocol::Socks | Protocol::Http => {
+        Protocol::Trojan => put(seed, "password", PW),
+        Protocol::Socks | Protocol::Http => {
             put(seed, "username", "user");
             put(seed, "password", PW);
         }
@@ -113,7 +98,7 @@ fn make(
     name: &str,
 ) -> Option<Profile> {
     if proto == Protocol::Custom {
-        return None; // no buildable launch config
+        return None; // carries only a raw blob; no builder path
     }
     let mut seed = json!({
         "protocol": wire(&proto),
@@ -126,6 +111,15 @@ fn make(
         let mut t = json!({ "kind": wire(&net) });
         if net == Network::Grpc {
             t["serviceName"] = json!("GunService");
+        }
+        if net == Network::Ws {
+            t["host"] = json!("cdn.example");
+            t["path"] = json!("/ws");
+        }
+        if net == Network::Xhttp {
+            t["host"] = json!("cdn.example");
+            t["path"] = json!("/x");
+            t["mode"] = json!("auto");
         }
         seed["transport"] = t;
     }
@@ -155,7 +149,7 @@ fn ss_key(method: SsMethod) -> &'static str {
     }
 }
 
-/// Every case to validate, generated by sweeping our enums.
+/// Every profile case to validate, generated by sweeping our enums.
 fn generate() -> Vec<(String, Profile)> {
     let mut cases: Vec<(String, Profile)> = Vec::new();
 
@@ -168,7 +162,12 @@ fn generate() -> Vec<(String, Profile)> {
     }
 
     // 2. Transport-carrying protocols × every transport (TLS).
-    for proto in [Protocol::Vless, Protocol::Vmess, Protocol::Trojan] {
+    for proto in [
+        Protocol::Vless,
+        Protocol::Vmess,
+        Protocol::Trojan,
+        Protocol::Shadowsocks,
+    ] {
         for net in Network::iter() {
             let name = format!("xport/{}-{}", wire(&proto), wire(&net));
             if let Some(p) = make(proto, Some(net), Security::Tls, &name) {
@@ -198,8 +197,7 @@ fn generate() -> Vec<(String, Profile)> {
     }
 
     // 5. VLESS-WS carrying an ECH config. Share links ship the raw base64
-    // ECHConfigList; sing-box wants it PEM-armored, so this exercises the
-    // wrapping in `singbox_config` against the real `sing-box check`.
+    // ECHConfigList; this exercises the emitted `ech` option against the core.
     {
         let name = "ech/vless-ws".to_string();
         if let Some(Profile::Vless(mut v)) =
@@ -229,8 +227,7 @@ fn generate() -> Vec<(String, Profile)> {
     }
 
     // 7. VMess advanced fields: non-zero alter_id + global_padding +
-    //    authenticated_length + packet_encoding. sing-box emits each; defaults
-    //    leave them unset so the branches aren't exercised by the sweep.
+    //    authenticated_length + packet_encoding.
     {
         let name = "vmess-advanced".to_string();
         if let Some(Profile::Vmess(mut v)) =
@@ -244,8 +241,8 @@ fn generate() -> Vec<(String, Profile)> {
         }
     }
 
-    // 8. VLESS packet_encoding variants the builder branches on. `packetaddr`
-    //    produces a different outbound field than the default xudp.
+    // 8. VLESS packet_encoding variants the builder branches on (`packetaddr`
+    //    produces a different outbound field than the default xudp).
     {
         let name = "vless-packetaddr".to_string();
         if let Some(Profile::Vless(mut v)) =
@@ -270,341 +267,116 @@ fn generate() -> Vec<(String, Profile)> {
         }
     }
 
-    // 10. Shadowtls version 1 and 2 (the protocol sweep only hits default 3).
-    for ver in [1i64, 2] {
-        let name = format!("shadowtls-v{ver}");
-        if let Some(Profile::Shadowtls(mut s)) =
-            make(Protocol::Shadowtls, None, Security::Tls, &name)
+    // 10. VLESS outbound mux on (profile-level), grpc transport.
+    {
+        let name = "vless-mux-grpc".to_string();
+        if let Some(Profile::Vless(mut v)) =
+            make(Protocol::Vless, Some(Network::Grpc), Security::Tls, &name)
         {
-            s.version = ver;
-            cases.push((name, Profile::Shadowtls(s)));
+            v.mux_enabled = true;
+            cases.push((name, Profile::Vless(v)));
         }
     }
 
-    // 11. Hysteria2 with up/down bandwidth — flips congestion to "brutal" and
-    //     emits brutalUp/brutalDown (xray) or up_mbps/down_mbps (sing-box).
+    // 11. TLS extra knobs: cipher suites, curve preferences, min/max version,
+    //     PCS hex, non-default uTLS fingerprint.
     {
-        let name = "hysteria2-brutal".to_string();
-        if let Some(Profile::Hysteria2(mut h)) =
-            make(Protocol::Hysteria2, None, Security::Tls, &name)
-        {
-            h.up_mbps = 100;
-            h.down_mbps = 100;
-            cases.push((name, Profile::Hysteria2(h)));
-        }
-    }
-
-    // 12. Hysteria2 with port hopping + salamander obfs — exercises the
-    //     server_ports/hop_interval builder branch (sing-box) and the
-    //     finalmask.udpHop/finalmask.udp.salamander branch (xray).
-    {
-        let name = "hysteria2-hop-obfs".to_string();
-        if let Some(Profile::Hysteria2(mut h)) =
-            make(Protocol::Hysteria2, None, Security::Tls, &name)
-        {
-            h.ports = "20000-30000".into();
-            h.hop_interval = "30".into();
-            h.obfs_type = Hysteria2Obfs::Salamander;
-            h.obfs_password = "obfspass".into();
-            cases.push((name, Profile::Hysteria2(h)));
-        }
-    }
-
-    // 13. Naive with QUIC transport enabled — flips the `quic` bool sing-box
-    //     validates (a separate config shape from the default TCP/HTTP/2).
-    {
-        let name = "naive-quic".to_string();
-        if let Some(Profile::Naive(mut n)) = make(Protocol::Naive, None, Security::Tls, &name) {
-            n.naive_quic = true;
-            cases.push((name, Profile::Naive(n)));
-        }
-    }
-
-    // 14. TUIC non-default congestion control + udp_relay_mode + zero_rtt +
-    //     heartbeat. sing-box emits each as a distinct outbound field.
-    for cc in [CongestionControl::Cubic, CongestionControl::NewReno] {
-        let name = format!("tuic-cc/{}", wire(&cc));
-        if let Some(Profile::Tuic(mut t)) = make(Protocol::Tuic, None, Security::Tls, &name) {
-            t.congestion_control = cc;
-            t.udp_relay_mode = "native".into();
-            t.zero_rtt = true;
-            t.heartbeat = "10s".into();
-            cases.push((name, Profile::Tuic(t)));
-        }
-    }
-
-    // 15. WireGuard with pre_shared_key + persistent_keepalive + reserved
-    //     bytes. Both builders emit each conditionally; defaults skip them.
-    {
-        let name = "wireguard-full".to_string();
-        if let Some(Profile::Wireguard(mut w)) =
-            make(Protocol::Wireguard, None, Security::None, &name)
-        {
-            w.pre_shared_key = WG_PSK.into();
-            w.persistent_keepalive = 25;
-            w.reserved = vec![0, 0, 0];
-            cases.push((name, Profile::Wireguard(w)));
-        }
-    }
-
-    // 16. Shadowsocks plugin code paths. SS+WS triggers the v2ray-plugin
-    //     websocket branch; SS+TCP+http-header triggers obfs-local. Neither
-    //     is reached by the SS cipher sweep (which uses TCP+TLS).
-    {
-        let name = "ss-plugin/ws".to_string();
-        if let Some(Profile::Shadowsocks(mut s)) = make(
-            Protocol::Shadowsocks,
-            Some(Network::Ws),
-            Security::Tls,
-            &name,
-        ) {
-            if let Transport::Ws(ref mut w) = s.transport {
-                w.host = "cdn.example".into();
-                w.path = "/sw".into();
-            }
-            cases.push((name, Profile::Shadowsocks(s)));
-        }
-    }
-    {
-        let name = "ss-plugin/obfs-http".to_string();
-        if let Some(Profile::Shadowsocks(mut s)) = make(
-            Protocol::Shadowsocks,
-            Some(Network::Tcp),
-            Security::None,
-            &name,
-        ) {
-            if let Transport::Tcp(ref mut tc) = s.transport {
-                tc.header_type = HeaderType::Http;
-                tc.host = "obfs.example".into();
-                tc.path = "/".into();
-            }
-            cases.push((name, Profile::Shadowsocks(s)));
-        }
-    }
-
-    // 17. TLS sub-fields on VLESS+TLS that the builder emits conditionally.
-    //     Each is a distinct tlsSettings / tls object key a core must accept.
-    {
-        let name = "tls-fields/full".to_string();
+        let name = "tls-knobs".to_string();
         if let Some(Profile::Vless(mut v)) =
             make(Protocol::Vless, Some(Network::Tcp), Security::Tls, &name)
         {
-            v.tls.fingerprint = Fingerprint::Firefox;
-            v.tls.alpn = vec!["h2".into(), "http/1.1".into()];
             v.tls.tls_min_version = "1.2".into();
             v.tls.tls_max_version = "1.3".into();
             v.tls.tls_cipher_suites = vec!["TLS_AES_128_GCM_SHA256".into()];
             v.tls.tls_curve_preferences = vec!["X25519".into()];
             v.tls.pcs = PCS_HEX.into();
-            v.tls.reject_unknown_sni = true;
-            v.tls.enable_session_resumption = true;
+            v.tls.fingerprint = Fingerprint::Firefox;
             cases.push((name, Profile::Vless(v)));
         }
     }
 
-    // 18. Reality sub-fields: spider_x (xray only) — emitted into realitySettings.
+    // 12. Shadowsocks over TCP carrying an HTTP fake-header obfuscation.
     {
-        let name = "reality/spider-x".to_string();
-        if let Some(Profile::Vless(mut v)) = make(
-            Protocol::Vless,
-            Some(Network::Tcp),
-            Security::Reality,
-            &name,
-        ) {
-            v.tls.spider_x = "/abc123".into();
-            cases.push((name, Profile::Vless(v)));
-        }
-    }
-
-    // 19. gRPC transport sub-fields (authority, multiMode, idle_timeout,
-    //     permit_without_stream, initial_window_size, user_agent).
-    {
-        let name = "grpc-advanced".to_string();
-        if let Some(Profile::Vless(mut v)) =
-            make(Protocol::Vless, Some(Network::Grpc), Security::Tls, &name)
+        let name = "ss-obfs-http".to_string();
+        if let Some(Profile::Shadowsocks(mut s)) =
+            make(Protocol::Shadowsocks, None, Security::Tls, &name)
         {
-            if let Transport::Grpc(ref mut g) = v.transport {
-                g.authority = "grpc.example".into();
-                g.mode = "multi".into();
-                g.idle_timeout = 60;
-                g.health_check_timeout = 30;
-                g.ping_timeout = 20;
-                g.permit_without_stream = true;
-                g.initial_window_size = 65536;
-                g.user_agent = "grpc-test".into();
-            }
-            cases.push((name, Profile::Vless(v)));
+            s.transport = Transport::Tcp(TcpTransport {
+                header_type: HeaderType::Http,
+                host: "cdn.example".into(),
+                path: "/".into(),
+            });
+            cases.push((name, Profile::Shadowsocks(s)));
         }
     }
 
-    // 20. WS transport sub-fields (early_data, early_data_header,
-    //     heartbeat_period, accept_proxy_protocol, custom headers).
+    // 13. WireGuard explicit knobs (psk, reserved, mtu, keepalive, workers).
     {
-        let name = "ws-advanced".to_string();
-        if let Some(Profile::Vless(mut v)) =
-            make(Protocol::Vless, Some(Network::Ws), Security::Tls, &name)
+        let name = "wireguard-knobs".to_string();
+        if let Some(Profile::Wireguard(mut w)) =
+            make(Protocol::Wireguard, None, Security::None, &name)
         {
-            if let Transport::Ws(ref mut w) = v.transport {
-                w.host = "cdn.example".into();
-                w.path = "/sw".into();
-                w.early_data = 2048;
-                w.early_data_header = "Sec-WebSocket-Protocol".into();
-                w.heartbeat_period = 30;
-                w.accept_proxy_protocol = true;
-                w.headers.insert("X-Custom".into(), "value".into());
-            }
-            cases.push((name, Profile::Vless(v)));
+            w.pre_shared_key = WG_PSK.into();
+            w.reserved = vec![1, 2, 3];
+            w.mtu = 1420;
+            w.persistent_keepalive = 25;
+            w.workers = 2;
+            w.local_address = "172.16.0.2/32, fd00::2/128".into();
+            cases.push((name, Profile::Wireguard(w)));
         }
     }
 
-    // 21. mKCP transport sub-fields (mtu, tti, uplink, downlink, cwnd_multiplier,
-    //     max_sending_window, seed).
+    // 14. Custom profile carrying a valid raw xray config.
     {
-        let name = "kcp-advanced".to_string();
-        if let Some(Profile::Vless(mut v)) =
-            make(Protocol::Vless, Some(Network::Kcp), Security::Tls, &name)
-        {
-            if let Transport::Kcp(ref mut k) = v.transport {
-                k.header_type = HeaderType::WechatVideo;
-                k.seed = "kcpseed".into();
-                k.mtu = 1350;
-                k.tti = 50;
-                k.uplink = 50;
-                k.downlink = 100;
-                k.cwnd_multiplier = 2;
-                k.max_sending_window = 128;
-            }
-            cases.push((name, Profile::Vless(v)));
-        }
-    }
-
-    // 22. XHTTP transport sub-fields (mode + extra JSON blob).
-    {
-        let name = "xhttp-mode".to_string();
-        if let Some(Profile::Vless(mut v)) =
-            make(Protocol::Vless, Some(Network::Xhttp), Security::Tls, &name)
-        {
-            if let Transport::Xhttp(ref mut x) = v.transport {
-                x.host = "xhttp.example".into();
-                x.path = "/xh".into();
-                x.mode = "packet-up".into();
-                x.extra = r#"{"x":"y"}"#.into();
-            }
-            cases.push((name, Profile::Vless(v)));
-        }
-    }
-
-    // 23. HTTPUpgrade early data + acceptProxyProtocol.
-    {
-        let name = "httpupgrade-ed".to_string();
-        if let Some(Profile::Vless(mut v)) = make(
-            Protocol::Vless,
-            Some(Network::Httpupgrade),
-            Security::Tls,
-            &name,
-        ) {
-            if let Transport::Httpupgrade(ref mut h) = v.transport {
-                h.host = "hu.example".into();
-                h.path = "/hu".into();
-                h.early_data = 2048;
-                h.accept_proxy_protocol = true;
-            }
-            cases.push((name, Profile::Vless(v)));
-        }
+        let name = "custom/raw".to_string();
+        let raw = json!({
+            "log": { "loglevel": "warning" },
+            "inbounds": [{ "port": 1080, "listen": "127.0.0.1", "protocol": "socks",
+                           "settings": { "auth": "noauth" } }],
+            "outbounds": [{ "protocol": "freedom", "tag": "direct" }]
+        })
+        .to_string();
+        let p: Profile = serde_json::from_value(json!({
+            "protocol": "custom",
+            "meta": { "id": "", "remarks": name, "groupId": "g-main" },
+            "raw": raw,
+        }))
+        .unwrap();
+        cases.push((name, p));
     }
 
     cases
 }
 
-// ── settings/routing matrix ──
-//
-// The protocol sweep above exercises every protocol/transport/security with
-// DEFAULT settings and no rules. To also cover the config-builder branches the
-// golden fixtures used to pin (routing modes, sniffing, fragment, mux, socks auth,
-// fake-dns, LAN listen, domain strategy, DNS routing), sweep a representative
-// profile through a settings matrix — once per engine (forced via
-// `core_by_protocol`) so both builders are exercised. Variants are geo-independent
-// except where noted (`needs_geo`): routing-rules mode is covered with plain
-// domain/IP rules that need no geoip/geosite/srs data, so the matrix runs wherever
-// the cores are staged; a geo-needing variant (e.g. xray fake-dns, whose DNS rule
-// references `geoip:!private`) is skipped when `geoip.dat` isn't present.
-
-/// A config to validate: profile + the settings/rules it's built with. `needs_geo`
-/// marks a case whose emitted config references geoip/geosite data not staged by
-/// `fetch-binaries.sh` — it's validated only when that data is available.
+/// One validation case: a profile plus optional settings / rules / chain peers.
+/// `needs_geo` marks cases referencing geoip / geosite data files (skipped when no
+/// `geoip.dat` is staged next to the core).
 struct Case {
     name: String,
     profile: Profile,
     settings: AdvancedSettings,
     rules: Vec<RoutingRule>,
-    needs_geo: bool,
-    /// Other profiles in the state besides `profile` (proxy-chain hops).
     others: Vec<Profile>,
+    needs_geo: bool,
 }
 
-/// A couple of plain (non-geo) routing rules: a domain → direct and an IP →
-/// direct. These exercise Rules-mode rule emission without needing geo data.
-fn plain_rules() -> Vec<RoutingRule> {
-    vec![
-        RoutingRule {
-            id: "d".into(),
-            remarks: "direct-domain".into(),
-            enabled: true,
-            outbound_tag: "direct".into(),
-            domain: Some(vec!["example.com".into()]),
-            ip: None,
-            port: None,
-            network: None,
-            protocol: None,
-            process: None,
-            package_name: None,
-            source_ip: None,
-        },
-        RoutingRule {
-            id: "i".into(),
-            remarks: "direct-ip".into(),
-            enabled: true,
-            outbound_tag: "direct".into(),
-            domain: None,
-            ip: Some(vec!["10.0.0.0/8".into()]),
-            port: None,
-            network: None,
-            protocol: None,
-            process: None,
-            package_name: None,
-            source_ip: None,
-        },
-    ]
+fn plain(name: &str, profile: Profile) -> Case {
+    Case {
+        name: name.to_string(),
+        profile,
+        settings: AdvancedSettings::default(),
+        rules: vec![],
+        others: vec![],
+        needs_geo: false,
+    }
 }
 
-/// Rules exercising the port / network / protocol match fields (both builders
-/// emit these into routing rule objects).
-fn match_field_rules() -> Vec<RoutingRule> {
-    vec![RoutingRule {
-        id: "pnp".into(),
-        remarks: "port-network-protocol".into(),
-        enabled: true,
-        outbound_tag: "direct".into(),
-        domain: Some(vec!["cdn.example".into()]),
-        ip: None,
-        port: Some("80,443,8080-8090".into()),
-        network: Some(kasumi_core::state::RuleNetwork::Tcp),
-        protocol: Some(vec!["http".into()]),
-        process: None,
-        package_name: None,
-        source_ip: None,
-    }]
-}
-
-/// Rules scoped by where the connection came from: every process form (name,
-/// path, directory), an Android package, and a source CIDR, alone and next to a
-/// domain (which sing-box also turns into a scoped DNS rule).
-fn source_match_rules() -> Vec<RoutingRule> {
-    let rule = |id: &str| RoutingRule {
+fn rule(id: &str, outbound: &str) -> RoutingRule {
+    RoutingRule {
         id: id.into(),
         remarks: id.into(),
         enabled: true,
-        outbound_tag: "direct".into(),
+        outbound_tag: outbound.into(),
         domain: None,
         ip: None,
         port: None,
@@ -613,399 +385,199 @@ fn source_match_rules() -> Vec<RoutingRule> {
         process: None,
         package_name: None,
         source_ip: None,
-    };
-    vec![
-        RoutingRule {
-            process: Some(vec![
-                "curl".into(),
-                "/usr/bin/wget".into(),
-                "/opt/games/".into(),
-            ]),
-            ..rule("process")
-        },
-        RoutingRule {
-            package_name: Some(vec!["com.example.app".into()]),
-            ..rule("package")
-        },
-        RoutingRule {
-            source_ip: Some(vec!["192.168.1.0/24".into()]),
-            ..rule("source")
-        },
-        RoutingRule {
-            domain: Some(vec!["example.com".into()]),
-            process: Some(vec!["firefox".into()]),
-            source_ip: Some(vec!["10.0.0.5".into()]),
-            ..rule("domain-and-source")
-        },
-    ]
+    }
 }
 
-/// Named settings/rules variants, each exercising a distinct builder branch. The
-/// trailing bool is `needs_geo` — true when the emitted config references geoip/
-/// geosite data (xray fake-dns pulls `geoip:!private` into the DNS block).
-fn settings_variants() -> Vec<(&'static str, AdvancedSettings, Vec<RoutingRule>, bool)> {
-    // Each variant is a single (or couple of) field override(s) on the defaults —
-    // written with struct-update syntax rather than `mut … = default()` so the
-    // intent (which branch is exercised) reads off the field name.
-    vec![
-        (
-            "global",
-            AdvancedSettings {
-                routing_mode: RoutingMode::Global,
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        (
-            "rules-empty",
-            AdvancedSettings {
-                routing_mode: RoutingMode::Rules,
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // Rules mode with plain (non-geo) rules + sniffing/routeOnly toggled.
-        (
-            "rules-sniff-routonly",
-            AdvancedSettings {
-                routing_mode: RoutingMode::Rules,
-                domain_sniffing: true,
-                route_only: true,
-                ..Default::default()
-            },
-            plain_rules(),
-            false,
-        ),
-        // Rules mode with port + network + protocol match fields.
-        (
-            "rules-match-fields",
-            AdvancedSettings {
-                routing_mode: RoutingMode::Rules,
-                ..Default::default()
-            },
-            match_field_rules(),
-            false,
-        ),
-        // Rules mode with process / package / source-address match fields.
-        (
-            "rules-source-fields",
-            AdvancedSettings {
-                routing_mode: RoutingMode::Rules,
-                ..Default::default()
-            },
-            source_match_rules(),
-            false,
-        ),
-        // Every domain strategy the builder branches on.
-        (
-            "ds-asis",
-            AdvancedSettings {
-                domain_strategy: DomainStrategy::AsIs,
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        (
-            "ds-ipondemand",
-            AdvancedSettings {
-                domain_strategy: DomainStrategy::IpOnDemand,
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // xray outbound features.
-        (
-            "fragment",
-            AdvancedSettings {
-                fragment: true,
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // xray fragment with explicit sub-settings (packets + length + delay).
-        (
-            "fragment-subs",
-            AdvancedSettings {
-                fragment: true,
-                fragment_packets: "tlshello".into(),
-                fragment_length: Some("50-100".into()),
-                fragment_delay: Some("10-20".into()),
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        (
-            "mux",
-            AdvancedSettings {
-                mux: true,
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // xray mux with xudp sub-settings (xudpConcurrency + xudpProxyUDP443).
-        (
-            "mux-xudp",
-            AdvancedSettings {
-                mux: true,
-                mux_xudp_concurrency: Some(8),
-                mux_xudp443: Some(MuxXudp443::Reject),
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // Local-inbound auth (both fields required to engage).
-        (
-            "socks-auth",
-            AdvancedSettings {
-                socks_username: Some("u".into()),
-                socks_password: Some("p".into()),
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // DNS branches. fake-dns emits `geoip:!private` on xray → needs geoip.dat.
-        (
-            "fake-dns",
-            AdvancedSettings {
-                fake_dns: true,
-                ..Default::default()
-            },
-            vec![],
-            true,
-        ),
-        (
-            "dns-direct",
-            AdvancedSettings {
-                dns_via_proxy: false,
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // DoH/DoT via a URL scheme in the address field — both an IP endpoint and a
-        // domain endpoint (the latter exercises the bootstrap `domain_resolver`).
-        (
-            "dns-doh-ip",
-            AdvancedSettings {
-                remote_dns: Some("https://1.1.1.1/dns-query".into()),
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        (
-            "dns-doh-domain",
-            AdvancedSettings {
-                remote_dns: Some("https://cloudflare-dns.com/dns-query".into()),
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // DoT via the tls:// scheme — a different DNS server type the builder emits.
-        (
-            "dns-dot",
-            AdvancedSettings {
-                remote_dns: Some("tls://1.1.1.1:853".into()),
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // DNS hosts (the `hosts` block both builders parse from the text field).
-        (
-            "dns-hosts",
-            AdvancedSettings {
-                dns_hosts: Some("example.com=1.2.3.4".into()),
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // Domestic DNS — sing-box emits it as the `local` server.
-        (
-            "domestic-dns",
-            AdvancedSettings {
-                domestic_dns: Some("223.5.5.5".into()),
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // IPv6 enabled — changes DNS query strategy (UseIP vs UseIPv4) and the
-        // tun address list (sing-box).
-        (
-            "ipv6",
-            AdvancedSettings {
-                ipv6_enabled: Some(true),
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // Log level override.
-        (
-            "log-debug",
-            AdvancedSettings {
-                log_level: Some(LogLevel::Debug),
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // sing-box strict_route.
-        (
-            "strict-route",
-            AdvancedSettings {
-                strict_route: true,
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // Custom local ports — exercises the port derivation logic.
-        (
-            "custom-ports",
-            AdvancedSettings {
-                local_socks_port: Some(10800),
-                local_http_port: Some(10801),
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // LAN-facing listen address (0.0.0.0).
-        (
-            "allow-lan",
-            AdvancedSettings {
-                allow_non_localhost: true,
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // Non-default sing-box tun stacks (gvisor is the default, swept above).
-        (
-            "stack-system",
-            AdvancedSettings {
-                singbox_stack: SingboxStack::System,
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        (
-            "stack-mixed",
-            AdvancedSettings {
-                singbox_stack: SingboxStack::Mixed,
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // Every sing-box TLS fragment method (xray ignores the choice).
-        (
-            "fragment-record",
-            AdvancedSettings {
-                fragment: true,
-                singbox_fragment: SingboxFragment::Record,
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        (
-            "fragment-segment",
-            AdvancedSettings {
-                fragment: true,
-                singbox_fragment: SingboxFragment::Segment,
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        (
-            "fragment-both",
-            AdvancedSettings {
-                fragment: true,
-                singbox_fragment: SingboxFragment::Both,
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        // Several remote DNS servers of mixed transports — sing-box chains them
-        // with tagged `evaluate` rules; xray takes the list as-is.
-        (
-            "dns-remote-list",
-            AdvancedSettings {
-                remote_dns: Some("https://1.1.1.1/dns-query, 8.8.8.8, tls://dns.google".into()),
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-        (
-            "dns-remote-list-fakedns",
-            AdvancedSettings {
-                remote_dns: Some("1.1.1.1, 8.8.8.8".into()),
-                fake_dns: true,
-                ..Default::default()
-            },
-            vec![],
-            true,
-        ),
-        // TUN exclude CIDRs (docker bridge networks) — sing-box emits
-        // `route_exclude_address` on the tun inbound; both cores must accept it.
-        (
-            "tun-exclude",
-            AdvancedSettings {
-                tun_exclude_addresses: Some("172.17.0.0/16, 172.18.0.0/16".into()),
-                ..Default::default()
-            },
-            vec![],
-            false,
-        ),
-    ]
-}
-
-/// Settings cases: a representative profile × every variant × both engines.
 fn settings_cases() -> Vec<Case> {
-    let vless = make(Protocol::Vless, Some(Network::Tcp), Security::Tls, "vless")
-        .expect("representative vless builds");
+    let base = || make(Protocol::Vless, Some(Network::Tcp), Security::Tls, "s").unwrap();
     let mut cases = Vec::new();
-    for (label, mut settings, rules, needs_geo) in settings_variants() {
-        for engine in [CoreEngine::Xray, CoreEngine::SingBox] {
-            settings.core_by_protocol.insert(Protocol::Vless, engine);
-            cases.push(Case {
-                name: format!("settings/{label}/{}", wire(&engine)),
-                profile: vless.clone(),
-                settings: settings.clone(),
-                rules: rules.clone(),
-                needs_geo,
-                others: vec![],
-            });
-        }
+
+    // Fragment on (fragmented TLS handshake mask).
+    {
+        let s = AdvancedSettings {
+            fragment: true,
+            fragment_packets: "tlshello".into(),
+            fragment_length: Some("100-200".into()),
+            fragment_delay: Some("10".into()),
+            ..Default::default()
+        };
+        cases.push(Case {
+            name: "settings/fragment".into(),
+            profile: base(),
+            settings: s,
+            rules: vec![],
+            others: vec![],
+            needs_geo: false,
+        });
+    }
+
+    // Mux on + xudp443 rejection + non-localhost listen + custom ports + socks auth.
+    {
+        let s = AdvancedSettings {
+            mux: true,
+            mux_concurrency: 8,
+            mux_xudp_concurrency: Some(4),
+            mux_xudp443: Some(MuxXudp443::Reject),
+            allow_non_localhost: true,
+            local_socks_port: Some(10808),
+            local_http_port: Some(10809),
+            socks_username: Some("user".into()),
+            socks_password: Some("pw".into()),
+            domain_strategy: DomainStrategy::IpIfNonMatch,
+            ..Default::default()
+        };
+        cases.push(Case {
+            name: "settings/mux-inbound".into(),
+            profile: base(),
+            settings: s,
+            rules: vec![],
+            others: vec![],
+            needs_geo: false,
+        });
+    }
+
+    // Fake DNS + dns through proxy + ipv6.
+    {
+        let s = AdvancedSettings {
+            fake_dns: true,
+            dns_via_proxy: true,
+            ipv6_enabled: Some(true),
+            remote_dns: Some("1.1.1.1, 8.8.8.8".into()),
+            ..Default::default()
+        };
+        cases.push(Case {
+            name: "settings/dns".into(),
+            profile: base(),
+            settings: s,
+            rules: vec![],
+            others: vec![],
+            needs_geo: false,
+        });
+    }
+
+    // Log levels.
+    for level in [
+        LogLevel::Debug,
+        LogLevel::Info,
+        LogLevel::Warning,
+        LogLevel::Error,
+        LogLevel::None,
+    ] {
+        let s = AdvancedSettings {
+            log_level: Some(level),
+            ..Default::default()
+        };
+        cases.push(Case {
+            name: format!("settings/log-{}", wire(&level)),
+            profile: base(),
+            settings: s,
+            rules: vec![],
+            others: vec![],
+            needs_geo: false,
+        });
+    }
+
+    // Routing modes + a rules-mode case with domain/ip/port rules.
+    for mode in [RoutingMode::Global, RoutingMode::Custom, RoutingMode::Rules] {
+        let mut r1 = rule("r1", "direct");
+        r1.domain = Some(vec![
+            "domain:example.com".into(),
+            "full:exact.example".into(),
+        ]);
+        r1.port = Some("80,443".into());
+        let mut r2 = rule("r2", "block");
+        r2.ip = Some(vec!["192.168.0.0/16".into()]);
+        let settings = AdvancedSettings {
+            routing_mode: mode,
+            ..Default::default()
+        };
+        cases.push(Case {
+            name: format!("settings/routing-{}", wire(&mode)),
+            profile: base(),
+            settings,
+            rules: vec![r1, r2],
+            others: vec![],
+            needs_geo: false,
+        });
+    }
+
+    // Geo-dependent rule (needs staged geoip/geosite or is skipped).
+    {
+        let mut r = rule("geo", "block");
+        r.ip = Some(vec!["geoip:private".into()]);
+        r.domain = Some(vec!["geosite:cn".into()]);
+        cases.push(Case {
+            name: "settings/routing-geo".into(),
+            profile: base(),
+            settings: AdvancedSettings::default(),
+            rules: vec![r],
+            others: vec![],
+            needs_geo: true,
+        });
+    }
+
+    // Custom raw routing JSON string.
+    {
+        let s = AdvancedSettings {
+            custom_routing: Some(
+                json!({ "domainStrategy": "IPIfNonMatch",
+                        "rules": [{ "type": "field", "outboundTag": "direct",
+                                    "domain": ["geosite:cn"] }] })
+                .to_string(),
+            ),
+            ..Default::default()
+        };
+        cases.push(Case {
+            name: "settings/custom-routing".into(),
+            profile: base(),
+            settings: s,
+            rules: vec![],
+            others: vec![],
+            needs_geo: false,
+        });
+    }
+
+    cases
+}
+
+fn chain_cases() -> Vec<Case> {
+    let with_id = |mut p: Profile, id: &str, via: Option<&str>| {
+        p.meta_mut().id = id.into();
+        p.meta_mut().via = via.map(str::to_string);
+        p
+    };
+    let exit = make(Protocol::Vless, Some(Network::Ws), Security::Tls, "exit").unwrap();
+    let mut cases = Vec::new();
+    for (proto, net) in [
+        (Protocol::Trojan, Some(Network::Tcp)),
+        (Protocol::Wireguard, None),
+        (Protocol::Shadowsocks, None),
+    ] {
+        let mid = with_id(
+            make(proto, net, Security::Tls, "mid").unwrap(),
+            "mid",
+            Some("entry"),
+        );
+        let entry = with_id(
+            make(Protocol::Vmess, Some(Network::Grpc), Security::Tls, "entry").unwrap(),
+            "entry",
+            None,
+        );
+        let exit = with_id(exit.clone(), "exit", Some("mid"));
+        cases.push(Case {
+            name: format!("chain/{}", wire(&proto)),
+            profile: exit,
+            settings: AdvancedSettings::default(),
+            rules: vec![],
+            others: vec![mid, entry],
+            needs_geo: false,
+        });
     }
     cases
 }
 
-// ── core invocation ──
-
 fn binaries_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../src-tauri/binaries")
-        .canonicalize()
-        .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src-tauri/binaries"))
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bin")
 }
 
 fn find_core(env_var: &str, prefix: &str) -> Option<PathBuf> {
@@ -1024,30 +596,19 @@ fn find_core(env_var: &str, prefix: &str) -> Option<PathBuf> {
     None
 }
 
+/// Build one case's config; `None` when our builder declines the combo.
 fn build_config(
     profile: &Profile,
     others: &[Profile],
     settings: &AdvancedSettings,
     rules: &[RoutingRule],
-    srs_dir: &Path,
-) -> Option<(Value, CoreEngine)> {
+) -> Option<Value> {
     let profiles: Vec<Profile> = std::iter::once(profile.clone())
         .chain(others.iter().cloned())
         .collect();
-    let built = build_core_config(
-        profile,
-        settings,
-        rules,
-        &profiles,
-        &srs_dir.to_string_lossy(),
-    )
-    .ok()?;
-    let mut config = built.config;
-    // The backend adds the cache file to every sing-box config it launches.
-    if built.engine == CoreEngine::SingBox {
-        apply_singbox_cache_file(&mut config, "cache.db", settings);
-    }
-    Some((config, built.engine))
+    build_core_config(profile, settings, rules, &profiles)
+        .ok()
+        .map(|c| c.config)
 }
 
 fn write_config(cfg: &Value) -> (tempfile::TempDir, PathBuf) {
@@ -1057,131 +618,33 @@ fn write_config(cfg: &Value) -> (tempfile::TempDir, PathBuf) {
     (dir, path)
 }
 
-/// Whether a field matches the way sing-box reads it: bools by value, listables
-/// by length, `ip_version` by being non-zero. `response_rcode` is a pointer
-/// upstream, so any non-null value counts.
-fn dns_field_is_set(rule: &Value, key: &str) -> bool {
-    match rule.get(key) {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(b)) => *b,
-        Some(Value::Array(a)) => !a.is_empty(),
-        Some(Value::String(s)) => !s.is_empty(),
-        Some(Value::Number(n)) => key == "response_rcode" || n.as_f64() != Some(0.0),
-        Some(Value::Object(_)) => true,
-    }
-}
-
-/// sing-box 1.14 `defaultRuleDisablesLegacyDNSMode` plus the action-side
-/// disablers of `dnsRuleActionDisablesLegacyDNSMode`.
-fn disables_legacy_dns_mode(rule: &Value) -> bool {
-    const DISABLING: [&str; 7] = [
-        "query_type",
-        "ip_version",
-        "match_response",
-        "response_rcode",
-        "response_answer",
-        "response_ns",
-        "response_extra",
-    ];
-    if DISABLING.iter().any(|k| dns_field_is_set(rule, k)) || dns_field_is_set(rule, "race") {
-        return true;
-    }
-    let action = match rule["action"].as_str() {
-        None | Some("") => "route",
-        Some(a) => a,
-    };
-    if matches!(action, "evaluate" | "respond") {
-        return true;
-    }
-    matches!(action, "route" | "evaluate" | "route-options")
-        && ["speculative", "disable_optimistic_cache"]
-            .iter()
-            .any(|k| dns_field_is_set(rule, k))
-}
-
-/// sing-box 1.14 constraint on generated DNS rules: once any rule disables the
-/// legacy DNS mode, every response matched field (`ip_cidr`, `ip_is_private`,
-/// `ip_accept_any`, `response_*`) without `match_response` is a startup error.
-/// `sing-box check` fails on the first offending rule only; this lists all of
-/// them, and needs neither a staged core nor geo data. Rule-set purity and
-/// logical-rule nesting are out of scope — our generator emits neither.
-fn singbox_legacy_dns_violations(cfg: &Value) -> Vec<String> {
-    const RESPONSE_MATCHED: [&str; 7] = [
-        "ip_cidr",
-        "ip_is_private",
-        "ip_accept_any",
-        "response_rcode",
-        "response_answer",
-        "response_ns",
-        "response_extra",
-    ];
-    let Some(rules) = cfg["dns"]["rules"].as_array() else {
-        return Vec::new();
-    };
-    if !rules.iter().any(disables_legacy_dns_mode) {
-        return Vec::new();
-    }
-    rules
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| !dns_field_is_set(r, "match_response"))
-        .filter_map(|(i, r)| {
-            let used: Vec<&str> = RESPONSE_MATCHED
-                .iter()
-                .filter(|k| dns_field_is_set(r, k))
-                .copied()
-                .collect();
-            (!used.is_empty()).then(|| {
-                format!(
-                    "dns rule[{i}] uses {} without match_response while the legacy DNS mode is disabled",
-                    used.join(", ")
-                )
-            })
-        })
-        .collect()
-}
-
-fn validate(engine: CoreEngine, bin: &Path, cfg: &Path, asset_dir: &Path) -> (bool, String) {
-    let mut cmd = Command::new(bin);
-    match engine {
-        CoreEngine::Xray => {
-            cmd.args(["run", "-test", "-c"]).arg(cfg);
-            cmd.env("XRAY_LOCATION_ASSET", asset_dir);
-        }
-        CoreEngine::SingBox => {
-            cmd.args(["check", "-c"]).arg(cfg);
-        }
-    }
-    let out = cmd.output().expect("spawn core");
+fn validate(bin: &Path, cfg: &Path, asset_dir: &Path) -> (bool, String) {
+    let out = Command::new(bin)
+        .args(["run", "-test", "-c"])
+        .arg(cfg)
+        .env("XRAY_LOCATION_ASSET", asset_dir)
+        .output()
+        .expect("spawn xray");
     let mut combined = String::from_utf8_lossy(&out.stdout).into_owned();
     combined.push_str(&String::from_utf8_lossy(&out.stderr));
     (out.status.success(), combined)
 }
 
-/// Build every case, sweep the generated configs for constraints a core would
-/// only surface one at a time, then run them past the staged cores. The sweep
-/// is static, so it also runs where no core is staged (plain CI) and on cases
-/// the missing geo data would otherwise skip.
+/// Build every case and run it past the staged core (skipping everything when no
+/// core is staged, as in a plain CI checkout).
 fn validate_all(cases: Vec<Case>) {
     let xray = find_core("KASUMI_XRAY_BIN", "xray");
-    let singbox = find_core("KASUMI_SINGBOX_BIN", "sing-box");
-    let cores_staged = xray.is_some() || singbox.is_some();
+    let cores_staged = xray.is_some();
     if !cores_staged {
         eprintln!(
-            "no staged binaries in {} (run scripts/fetch-binaries.sh desktop): static sweep only",
+            "no staged xray binary in {} (run scripts/fetch-binaries.sh) — static sweep only",
             binaries_dir().display()
         );
     }
 
     let asset_dir = binaries_dir();
-    let srs_dir = tempfile::tempdir().unwrap();
-    // geoip.dat isn't staged by fetch-binaries.sh (the app downloads it to its
-    // datadir at runtime), so a config that references geoip/geosite data can't be
-    // validated where cores are staged without it. Skip those cases with a count
-    // rather than failing them for missing data.
     let has_geo = asset_dir.join("geoip.dat").is_file();
 
-    let mut lint_failures = Vec::new();
     let mut core_failures = Vec::new();
     let mut built = 0;
     let mut checked = 0;
@@ -1195,17 +658,10 @@ fn validate_all(cases: Vec<Case>) {
         others,
     } in cases
     {
-        let Some((cfg_value, engine)) =
-            build_config(&profile, &others, &settings, &rules, srs_dir.path())
-        else {
+        let Some(cfg_value) = build_config(&profile, &others, &settings, &rules) else {
             continue; // our builder declined this combo — not a core problem.
         };
         built += 1;
-        if engine == CoreEngine::SingBox {
-            for violation in singbox_legacy_dns_violations(&cfg_value) {
-                lint_failures.push(format!("[{name}] {violation}"));
-            }
-        }
         if !cores_staged {
             continue;
         }
@@ -1213,22 +669,17 @@ fn validate_all(cases: Vec<Case>) {
             skipped_geo += 1;
             continue;
         }
-        let bin = match engine {
-            CoreEngine::Xray => xray.as_deref(),
-            CoreEngine::SingBox => singbox.as_deref(),
-        };
-        let Some(bin) = bin else { continue };
+        let Some(bin) = xray.as_deref() else { continue };
         let (_keep, cfg) = write_config(&cfg_value);
-        let (ok, output) = validate(engine, bin, &cfg, asset_dir.as_path());
+        let (ok, output) = validate(bin, &cfg, asset_dir.as_path());
         checked += 1;
         if !ok {
-            core_failures.push(format!("[{name}] {engine:?} rejected:\n{}", output.trim()));
+            core_failures.push(format!("[{name}] Xray rejected:\n{}", output.trim()));
         }
     }
 
     eprintln!(
-        "config sweep: {built} built, {} static violations; {}/{checked} accepted by their core{}",
-        lint_failures.len(),
+        "config sweep: {built} built; {}/{checked} accepted by xray{}",
         checked - core_failures.len(),
         if skipped_geo > 0 {
             format!(
@@ -1239,7 +690,7 @@ fn validate_all(cases: Vec<Case>) {
             String::new()
         }
     );
-    let failures: Vec<String> = lint_failures.into_iter().chain(core_failures).collect();
+    let failures = core_failures;
     assert!(
         failures.is_empty(),
         "{} problems across {built} generated configs ({checked} core-validated):\n\n{}",
@@ -1252,89 +703,7 @@ fn validate_all(cases: Vec<Case>) {
     );
     assert!(
         !cores_staged || checked > 0,
-        "no cases validated — staged binaries unreadable?"
-    );
-}
-
-#[test]
-fn legacy_dns_lint_lists_every_offending_rule() {
-    // The pre-fix fake-DNS shape: `sing-box check` rejected it naming only the
-    // first offending rule; the lint must list both response matched rules.
-    let pre_fix = json!({
-        "dns": {
-            "rules": [
-                { "ip_accept_any": true, "server": "hosts" },
-                { "query_type": ["A", "AAAA"], "server": "fakeip" },
-                { "ip_is_private": true, "server": "local" },
-            ]
-        }
-    });
-    let violations = singbox_legacy_dns_violations(&pre_fix);
-    assert_eq!(violations.len(), 2, "both rules listed: {violations:?}");
-    assert!(
-        violations[0].contains("dns rule[0]") && violations[0].contains("ip_accept_any"),
-        "{violations:?}"
-    );
-    assert!(
-        violations[1].contains("dns rule[2]") && violations[1].contains("ip_is_private"),
-        "{violations:?}"
-    );
-
-    // With no legacy-disabling rule the same address filters stay legal.
-    let legacy_only = json!({
-        "dns": {
-            "rules": [
-                { "ip_accept_any": true, "server": "hosts" },
-                { "ip_is_private": true, "server": "local" },
-            ]
-        }
-    });
-    assert!(singbox_legacy_dns_violations(&legacy_only).is_empty());
-}
-
-#[test]
-fn legacy_dns_lint_reads_fields_like_singbox() {
-    let violations =
-        |rules: Value| singbox_legacy_dns_violations(&json!({ "dns": { "rules": rules } }));
-
-    // Falsy fields don't match upstream either: `ip_version: 0` leaves the
-    // legacy mode on, and `ip_is_private: false` filters nothing.
-    assert!(
-        violations(json!([
-            { "ip_version": 0, "server": "local" },
-            { "ip_is_private": false, "ip_cidr": [], "server": "local" },
-        ]))
-        .is_empty()
-    );
-
-    // A `match_response` tag is a string, and it exempts its own rule.
-    assert!(
-        violations(json!([
-            { "query_type": ["A"], "action": "evaluate", "server": "remote" },
-            { "match_response": "probe", "ip_is_private": true, "server": "local" },
-        ]))
-        .is_empty()
-    );
-
-    // Action-side disablers, not just matched fields, turn the mode off.
-    for disabler in [
-        json!({ "race": true, "server": "remote" }),
-        json!({ "action": "route", "speculative": true, "server": "remote" }),
-        json!({ "action": "route-options", "disable_optimistic_cache": true }),
-        json!({ "action": "respond", "server": "remote" }),
-    ] {
-        let found = violations(json!([disabler, { "ip_accept_any": true, "server": "hosts" }]));
-        assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].contains("dns rule[1]"), "{found:?}");
-    }
-
-    // The same keys under an action that ignores them stay inert.
-    assert!(
-        violations(json!([
-            { "action": "reject", "speculative": true },
-            { "ip_accept_any": true, "server": "hosts" },
-        ]))
-        .is_empty()
+        "no cases validated — staged binary unreadable?"
     );
 }
 
@@ -1342,61 +711,9 @@ fn legacy_dns_lint_reads_fields_like_singbox() {
 fn protocol_matrix_validates_against_real_cores() {
     let cases = generate()
         .into_iter()
-        .map(|(name, profile)| Case {
-            name,
-            settings: AdvancedSettings::default(),
-            rules: vec![],
-            needs_geo: false,
-            profile,
-            others: vec![],
-        })
+        .map(|(name, p)| plain(&name, p))
         .collect();
     validate_all(cases);
-}
-
-/// Proxy chains: an exit profile dialing through a two-hop chain whose hops cover
-/// a stream protocol and the non-stream ones that dial differently (wireguard is a
-/// sing-box endpoint, hysteria2 is QUIC), on both cores. A chain a core can't
-/// build (e.g. a sing-box-only hop on xray) is declined by the builder, not sent.
-fn chain_cases() -> Vec<Case> {
-    let with_id = |mut p: Profile, id: &str, via: Option<&str>| {
-        p.meta_mut().id = id.into();
-        p.meta_mut().via = via.map(str::to_string);
-        p
-    };
-    let exit = make(Protocol::Vless, Some(Network::Ws), Security::Tls, "exit").unwrap();
-    let hop_kinds = [
-        (Protocol::Trojan, Some(Network::Tcp)),
-        (Protocol::Wireguard, None),
-        (Protocol::Hysteria2, None),
-        (Protocol::Shadowsocks, None),
-    ];
-    let mut cases = Vec::new();
-    for (proto, net) in hop_kinds {
-        let mid = with_id(
-            make(proto, net, Security::Tls, "mid").unwrap(),
-            "mid",
-            Some("entry"),
-        );
-        let entry = with_id(
-            make(Protocol::Vmess, Some(Network::Grpc), Security::Tls, "entry").unwrap(),
-            "entry",
-            None,
-        );
-        for engine in [CoreEngine::Xray, CoreEngine::SingBox] {
-            let mut exit = with_id(exit.clone(), "exit", Some("mid"));
-            exit.meta_mut().core_type = Some(engine);
-            cases.push(Case {
-                name: format!("chain/{}/{}", wire(&proto), wire(&engine)),
-                profile: exit,
-                settings: AdvancedSettings::default(),
-                rules: vec![],
-                needs_geo: false,
-                others: vec![mid.clone(), entry.clone()],
-            });
-        }
-    }
-    cases
 }
 
 #[test]

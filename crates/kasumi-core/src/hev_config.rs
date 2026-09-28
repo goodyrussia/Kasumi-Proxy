@@ -30,9 +30,9 @@ struct Tunnel {
 struct Socks5 {
     port: u16,
     address: &'static str,
-    /// UDP relay mode. Always `"udp"` (standard SOCKS5 UDP ASSOCIATE): the cores we
-    /// front (xray / sing-box SOCKS inbounds) speak that, not hev's `"tcp"`
-    /// UDP-in-TCP framing, which needs a hev-socks5-server upstream.
+    /// UDP relay mode. Always `"udp"` (standard SOCKS5 UDP ASSOCIATE): the xray
+    /// SOCKS inbound speaks that, not hev's `"tcp"` UDP-in-TCP framing, which
+    /// needs a hev-socks5-server upstream.
     udp: &'static str,
     /// SO_MARK stamped on hev's own upstream sockets so an `ip rule` keeps them out
     /// of the tunnel — load-bearing on Android (mirrors tun2socks' `fwmark`), unused

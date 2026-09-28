@@ -11,15 +11,13 @@ describe("i18n message helpers", () => {
     expect(translate("en", "profiles.subtitle", { servers: 1, groups: 2 })).toBe(
       "1 server · 2 groups",
     );
-    expect(translate("en", "subs.subtitle", { active: 2, imported: 1 })).toBe(
-      "2 active subscriptions · 1 imported profile",
-    );
+    expect(translate("en", "settings.rulesCount", { count: 2 })).toBe("2 rules");
   });
 
   it("handles pluralized store notifications", () => {
     expect(translate("en", "store.profile.imported", { count: 1 })).toBe("Imported 1 profile");
-    expect(translate("en", "store.sub.updatedProfiles", { name: "Demo", count: 4 })).toBe(
-      "Demo: 4 profiles",
+    expect(translate("en", "store.ping.removeUnreachable", { count: 3 })).toBe(
+      "Removed 3 unreachable profiles",
     );
   });
 

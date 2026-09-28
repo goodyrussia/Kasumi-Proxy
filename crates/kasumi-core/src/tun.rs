@@ -11,12 +11,12 @@ use serde::{Deserialize, Serialize};
 use crate::state::{AdvancedSettings, LogLevel};
 
 // ── Split-tun addresses ──────────────────────────────────────────────────────
-// The addresses the desktop and Android data-paths give their userspace tun(s).
-// Three independent writers must agree on them: a self-addressing engine (hev)
-// assigns them from its YAML, the `ip addr add` routing assigns them for tun2socks,
-// and the sing-box native tun bakes them into its inbound. They live here once so a
-// renumber can't update some copies and black-hole the rest. The `_CIDR` forms carry
-// the interface prefix; `tun_cidrs_match_hosts` guards each host/CIDR pair.
+// The addresses the Android data-path gives its userspace tun. Three independent
+// writers must agree on them: a self-addressing engine (hev) assigns them from its
+// YAML, the `ip addr add` routing assigns them for tun2socks, and the config
+// builders bake them in. They live here once so a renumber can't update some
+// copies and black-hole the rest. The `_CIDR` forms carry the interface prefix;
+// `tun_cidrs_match_hosts` guards each host/CIDR pair.
 
 /// Primary tun IPv4 host address.
 pub const TUN_IPV4: &str = "198.18.0.1";

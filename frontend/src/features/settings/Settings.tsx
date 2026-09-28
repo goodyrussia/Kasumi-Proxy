@@ -5,8 +5,7 @@
 
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { AppBar, Card, IconBtn, NavRow } from "../../components";
-import type { AssetFile, CoreEngine, Protocol, RoutingRule } from "../../generated/bindings";
-import { DEFAULT_CORE_BY_PROTOCOL } from "../../generated/defaults";
+import type { AssetFile, RoutingRule, TunEngine } from "../../generated/bindings";
 import { LOCALES, useLang, useT } from "../../i18n";
 import { isServiceUp } from "../../lib/bridge";
 import { getRuntimeBridgeMode } from "../../lib/ksu-webui";
@@ -14,13 +13,11 @@ import { useEscapeToClose } from "../../lib/useEscapeToClose";
 import { useIsWide } from "../../lib/useIsWide";
 import { uid } from "../../lib/utils";
 import { useAppStore } from "../../store/useAppStore";
-import { coresPreset } from "./helpers";
 import { pageFromHash, SETTINGS_PAGES, type SettingsPage } from "./pages";
 import { AboutSection } from "./sections/AboutSection";
 import { AdvancedSection } from "./sections/AdvancedSection";
 import { AssetFilesSection } from "./sections/AssetFilesSection";
 import { ConnectionSection } from "./sections/ConnectionSection";
-import { CoresSection } from "./sections/CoresSection";
 import { DiagnosticsSection } from "./sections/DiagnosticsSection";
 import { DnsSection } from "./sections/DnsSection";
 import { LocalPortsSection } from "./sections/LocalPortsSection";
@@ -49,7 +46,6 @@ export default function Settings({
 }) {
   const settings = useAppStore((s) => s.settings);
   const profiles = useAppStore((s) => s.profiles);
-  const subscriptions = useAppStore((s) => s.subscriptions);
   const routingRules = useAppStore((s) => s.routingRules);
   const assetFiles = useAppStore((s) => s.assetFiles);
   const activeId = useAppStore((s) => s.activeId);
@@ -97,13 +93,6 @@ export default function Settings({
   const [assetSheetOpen, setAssetSheetOpen] = useState(false);
   const [busyAssets, setBusyAssets] = useState<string[]>([]);
   const [rulesIOOpen, setRulesIOOpen] = useState(false);
-
-  const coreFor = (protocol: Protocol): CoreEngine =>
-    settings.coreByProtocol?.[protocol] ?? DEFAULT_CORE_BY_PROTOCOL[protocol];
-  const setCoreMap = (map: Partial<Record<Protocol, CoreEngine>>) =>
-    setSetting("coreByProtocol", map);
-  const setCoreFor = (protocol: Protocol, value: CoreEngine) =>
-    setSetting("coreByProtocol", { ...(settings.coreByProtocol ?? {}), [protocol]: value });
 
   const set = <K extends keyof typeof settings>(key: K, value: (typeof settings)[K]) =>
     setSetting(key, value);
@@ -197,13 +186,7 @@ export default function Settings({
 
   const setRoutingMode = (mode: typeof settings.routingMode) => set("routingMode", mode);
 
-  const preset = coresPreset(settings.coreByProtocol);
-  const coresSummary =
-    preset === "default"
-      ? t("settings.coresPreset.default")
-      : preset === "custom"
-        ? t("settings.coresPreset.custom")
-        : preset;
+  const engineLabel = (engine: TunEngine) => (engine === "hev" ? "hev-socks5-tunnel" : "tun2socks");
   const summary: Record<SettingsPage, string> = {
     routing:
       settings.routingMode === "rules"
@@ -211,7 +194,7 @@ export default function Settings({
         : settings.routingMode === "custom"
           ? t("settings.routingCustom")
           : t("settings.routingGlobal"),
-    cores: `${coresSummary} · ${t("settings.tunEngine")}`,
+    cores: engineLabel(settings.tunEngine),
     network: t("settings.page.networkSub"),
     resources: t("settings.assetCount", { count: assetFiles.length }),
     app: `${LOCALES[lang].label} · ${t("settings.page.appSub")}`,
@@ -254,17 +237,7 @@ export default function Settings({
           />
         );
       case "cores":
-        return (
-          <>
-            <CoresSection
-              coreByProtocol={settings.coreByProtocol}
-              coreFor={coreFor}
-              setCoreFor={setCoreFor}
-              setCoreMap={setCoreMap}
-            />
-            <TunEngineSection settings={settings} set={set} />
-          </>
-        );
+        return <TunEngineSection settings={settings} set={set} />;
       case "network":
         return (
           <>
@@ -307,10 +280,8 @@ export default function Settings({
             <DiagnosticsSection
               bridgeMode={bridgeMode}
               xrayVersion={caps?.xrayVersion ?? ""}
-              singboxVersion={caps?.singboxVersion ?? ""}
               tun={caps?.tun ?? false}
               profilesCount={profiles.length}
-              subscriptionsCount={subscriptions.length}
               activeId={activeId}
             />
           </>

@@ -55,7 +55,7 @@ fn migrate_v0_to_v1(v: &mut Value) {
     }
 }
 
-const META_KEYS: &[&str] = &["id", "remarks", "groupId", "subId", "coreType"];
+const META_KEYS: &[&str] = &["id", "remarks", "groupId"];
 const ENDPOINT_KEYS: &[&str] = &["address", "port"];
 const TRANSPORT_KEYS: &[&str] = &[
     "network",
@@ -117,16 +117,7 @@ fn has_transport(protocol: &str) -> bool {
 fn has_tls(protocol: &str) -> bool {
     matches!(
         protocol,
-        "vless"
-            | "vmess"
-            | "trojan"
-            | "shadowsocks"
-            | "http"
-            | "hysteria2"
-            | "tuic"
-            | "anytls"
-            | "naive"
-            | "shadowtls"
+        "vless" | "vmess" | "trojan" | "shadowsocks" | "http"
     )
 }
 
@@ -159,8 +150,7 @@ pub fn migrate_profile(v: &mut Value) {
 fn flatten_to_nested(v: &mut Value, protocol: &str) {
     let Some(obj) = v.as_object_mut() else { return };
 
-    let mut meta = take_group(obj, META_KEYS);
-    fix_meta(&mut meta);
+    let meta = take_group(obj, META_KEYS);
     obj.insert("meta".into(), Value::Object(meta));
 
     if protocol != "custom" {
@@ -198,16 +188,6 @@ fn take_group(obj: &mut Map<String, Value>, keys: &[&str]) -> Map<String, Value>
         }
     }
     out
-}
-
-fn fix_meta(meta: &mut Map<String, Value>) {
-    // `coreType` was a string with a `"global"` sentinel; it is now nullable.
-    match meta.get("coreType").and_then(Value::as_str) {
-        Some("xray") | Some("sing-box") => {}
-        _ => {
-            meta.insert("coreType".into(), Value::Null);
-        }
-    }
 }
 
 fn fix_tls(tls: &mut Map<String, Value>) {
@@ -303,13 +283,6 @@ fn nest_transport(flat: &Map<String, Value>) -> Value {
             put(&mut o, "initialWindowSize", "grpcInitialWindowsSize");
             put(&mut o, "userAgent", "userAgent");
         }
-        "h2" => {
-            o.insert("kind".into(), "h2".into());
-            put(&mut o, "host", "host");
-            put(&mut o, "path", "path");
-            put(&mut o, "idleTimeout", "grpcIdleTimeout");
-            put(&mut o, "pingTimeout", "grpcPingTimeout");
-        }
         "httpupgrade" => {
             o.insert("kind".into(), "httpupgrade".into());
             put(&mut o, "host", "host");
@@ -335,10 +308,6 @@ fn nest_transport(flat: &Map<String, Value>) -> Value {
             put(&mut o, "downlink", "kcpDownlink");
             put(&mut o, "cwndMultiplier", "kcpCwndMultiplier");
             put(&mut o, "maxSendingWindow", "kcpMaxSendingWindow");
-        }
-        "quic" => {
-            o.insert("kind".into(), "quic".into());
-            put(&mut o, "headerType", "headerType");
         }
         _ => {
             o.insert("kind".into(), "tcp".into());
@@ -375,8 +344,7 @@ mod tests {
     fn flat_vless_ws_upgrades_to_nested_tagged_transport() {
         let flat = json!({
             "protocol": "vless",
-            "id": "x", "remarks": "Home", "groupId": "g-main", "subId": null,
-            "coreType": "global",
+            "id": "x", "remarks": "Home", "groupId": "g-main",
             "address": "ex.com", "port": 443,
             "network": "ws", "headerType": "none", "host": "cdn.ex.com", "path": "/ws",
             "wsEarlyData": 2048, "wsEarlyDataHeader": "Sec-WebSocket-Protocol",
@@ -395,7 +363,7 @@ mod tests {
         migrate_profile(&mut v);
         // Coarse structural checks.
         assert!(v["meta"].is_object());
-        assert!(v["meta"]["coreType"].is_null(), "global → null");
+        assert!(v["meta"].get("coreType").is_none(), "no coreType key");
         assert!(v["meta"].get("ping").is_none(), "ping dropped");
         assert_eq!(v["transport"]["kind"], "ws");
         assert_eq!(v["transport"]["earlyData"], 2048);
