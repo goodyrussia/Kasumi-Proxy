@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use kasumi_core::chain::chain_candidates;
 use kasumi_core::contract::{Capabilities, FetchMode, LogTarget, ServiceState, TestKind, WsInfo};
-use kasumi_core::core_config::{CoreConfig, build_core_config};
+use kasumi_core::core_config::{CoreConfig, build_core_config_pinned};
 use kasumi_core::mutate::{MutationIntent, apply_mutation};
 use kasumi_core::profile::Profile;
 use kasumi_core::share::{build_share_link, parse_share_links};
@@ -214,8 +214,22 @@ pub(crate) async fn build_profile_config(
         // its tun inbound stripped by a non-tun proxyMode.
         settings.proxy_mode = kasumi_core::state::ProxyMode::Tun;
     }
-    let mut built =
-        build_core_config(profile, &settings, &state.routing_rules, &profiles).map_err(err)?;
+    // Pin the server hostname to a resolved address for this connect (see
+    // `server_resolve`): the core then dials the IP and never has to look the
+    // hostname up itself — its own lookups run through netd, outside the
+    // module's UID capture, where carrier-DNS stalls kill fresh connections.
+    let pin = match profile.endpoint() {
+        Some(ep) => crate::server_resolve::resolve_dial_pin(platform, &ep.address, ep.port).await,
+        None => None,
+    };
+    let mut built = build_core_config_pinned(
+        profile,
+        &settings,
+        &state.routing_rules,
+        &profiles,
+        pin.as_ref(),
+    )
+    .map_err(err)?;
     platform.tune_config(&mut built.config);
     Ok(built)
 }

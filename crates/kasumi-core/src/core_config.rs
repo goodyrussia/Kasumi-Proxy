@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::enums::TunEngine;
 use crate::profile::Profile;
 use crate::state::{AdvancedSettings, ProxyMode, RoutingRule};
-use crate::xray_config::build_xray_config;
+use crate::xray_config::{DialPin, build_xray_config_pinned};
 
 /// TUN engine + config JSON for a profile, mirroring what the core is launched
 /// with.
@@ -28,7 +28,21 @@ pub fn build_core_config(
     routing_rules: &[RoutingRule],
     profiles: &[Profile],
 ) -> Result<CoreConfig, String> {
-    let config = build_xray_config(profile, settings, routing_rules, profiles)?;
+    build_core_config_pinned(profile, settings, routing_rules, profiles, None)
+}
+
+/// [`build_core_config`] with the profile's server hostname pinned to a
+/// connect-time resolved address ([`DialPin`]): outbounds dial the IP while
+/// name-carrying fields (TLS `serverName`, transport `host`, ...) keep the
+/// hostname.
+pub fn build_core_config_pinned(
+    profile: &Profile,
+    settings: &AdvancedSettings,
+    routing_rules: &[RoutingRule],
+    profiles: &[Profile],
+    pin: Option<&DialPin>,
+) -> Result<CoreConfig, String> {
+    let config = build_xray_config_pinned(profile, settings, routing_rules, profiles, pin)?;
     Ok(CoreConfig {
         tun: settings.tun_engine,
         config,
@@ -97,6 +111,40 @@ mod tests {
         let p = parse_share_link("vless://u@e.x:443?type=tcp&security=tls&sni=s", None).unwrap();
         let c = build_core_config(&p, &s, &[], std::slice::from_ref(&p)).unwrap();
         assert_eq!(c.tun, TunEngine::Tun2socks);
+    }
+
+    #[test]
+    fn pin_swaps_the_dial_address_and_keeps_the_hostname() {
+        let s = AdvancedSettings::default();
+        let p =
+            parse_share_link("vless://u@e.x:443?type=ws&security=tls&sni=s&host=h", None).unwrap();
+        let pin = DialPin {
+            host: "e.x".into(),
+            ip: "203.0.113.7".into(),
+        };
+        let c =
+            build_core_config_pinned(&p, &s, &[], std::slice::from_ref(&p), Some(&pin)).unwrap();
+        let ob = &c.config["outbounds"][0];
+        assert_eq!(ob["settings"]["vnext"][0]["address"], "203.0.113.7");
+        // Name-carrying fields keep the hostname.
+        assert_eq!(ob["streamSettings"]["tlsSettings"]["serverName"], "s");
+        assert_eq!(ob["streamSettings"]["wsSettings"]["host"], "h");
+    }
+
+    #[test]
+    fn a_pin_for_another_host_leaves_the_address_alone() {
+        let s = AdvancedSettings::default();
+        let p = parse_share_link("vless://u@e.x:443?type=tcp&security=tls&sni=s", None).unwrap();
+        let pin = DialPin {
+            host: "other.x".into(),
+            ip: "203.0.113.7".into(),
+        };
+        let c =
+            build_core_config_pinned(&p, &s, &[], std::slice::from_ref(&p), Some(&pin)).unwrap();
+        assert_eq!(
+            c.config["outbounds"][0]["settings"]["vnext"][0]["address"],
+            "e.x"
+        );
     }
 
     #[test]

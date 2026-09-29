@@ -29,15 +29,38 @@ fn wire<T: serde::Serialize>(v: &T) -> String {
         .unwrap_or_default()
 }
 
+/// A connect-time resolution of the proxy server's hostname: dial `ip` while the
+/// hostname lives on in every name-carrying field (TLS `serverName`, transport
+/// `host`, ...). Pinning removes the core's per-dial system-DNS lookup of the
+/// server host — on a root-module setup that lookup bottoms out in netd, outside
+/// every UID-capture rule, and its bad DNS windows stall fresh connections.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DialPin {
+    /// Endpoint hostname the pin was resolved from (matched case-insensitively).
+    pub host: String,
+    /// Resolved address literal to dial instead.
+    pub ip: String,
+}
+
+/// The dial target for an endpoint address: the pinned IP when the pin is for
+/// this hostname, else the address itself. Name-carrying fields must keep using
+/// the unpinned address.
+fn dial_address<'a>(address: &'a str, pin: Option<&'a DialPin>) -> &'a str {
+    match pin {
+        Some(p) if address.eq_ignore_ascii_case(&p.host) => &p.ip,
+        _ => address,
+    }
+}
+
 // ---------- outbound protocol builders ----------
 
-fn build_outbound_base(p: &Profile) -> Option<Map<String, Value>> {
+fn build_outbound_base(p: &Profile, pin: Option<&DialPin>) -> Option<Map<String, Value>> {
     let ep = p.endpoint();
     let map = match p {
         Profile::Vmess(v) => json!({
             "tag": "proxy", "protocol": "vmess",
             "settings": { "vnext": [{
-                "address": v.endpoint.address, "port": v.endpoint.port,
+                "address": dial_address(&v.endpoint.address, pin), "port": v.endpoint.port,
                 "users": [{ "id": v.uuid, "alterId": v.alter_id, "security": wire(&v.encryption) }],
             }]},
         }),
@@ -51,11 +74,11 @@ fn build_outbound_base(p: &Profile) -> Option<Map<String, Value>> {
             }
             json!({
                 "tag": "proxy", "protocol": "vless",
-                "settings": { "vnext": [{ "address": v.endpoint.address, "port": v.endpoint.port, "users": [user] }]},
+                "settings": { "vnext": [{ "address": dial_address(&v.endpoint.address, pin), "port": v.endpoint.port, "users": [user] }]},
             })
         }
         Profile::Trojan(t) => {
-            let mut server = json!({ "address": t.endpoint.address, "port": t.endpoint.port, "password": t.password });
+            let mut server = json!({ "address": dial_address(&t.endpoint.address, pin), "port": t.endpoint.port, "password": t.password });
             if t.flow != crate::enums::Flow::Empty {
                 server["flow"] = wire(&t.flow).into();
             }
@@ -63,23 +86,23 @@ fn build_outbound_base(p: &Profile) -> Option<Map<String, Value>> {
         }
         Profile::Shadowsocks(ss) => json!({
             "tag": "proxy", "protocol": "shadowsocks",
-            "settings": { "servers": [{ "address": ss.endpoint.address, "port": ss.endpoint.port, "method": wire(&ss.method), "password": ss.password, "uot": true }]},
+            "settings": { "servers": [{ "address": dial_address(&ss.endpoint.address, pin), "port": ss.endpoint.port, "method": wire(&ss.method), "password": ss.password, "uot": true }]},
         }),
         Profile::Socks(sk) => {
-            let mut server = json!({ "address": sk.endpoint.address, "port": sk.endpoint.port });
+            let mut server = json!({ "address": dial_address(&sk.endpoint.address, pin), "port": sk.endpoint.port });
             if !sk.username.is_empty() {
                 server["users"] = json!([{ "user": sk.username, "pass": sk.password }]);
             }
             json!({ "tag": "proxy", "protocol": "socks", "settings": { "servers": [server] } })
         }
         Profile::Http(h) => {
-            let mut server = json!({ "address": h.endpoint.address, "port": h.endpoint.port });
+            let mut server = json!({ "address": dial_address(&h.endpoint.address, pin), "port": h.endpoint.port });
             if !h.username.is_empty() {
                 server["users"] = json!([{ "user": h.username, "pass": h.password }]);
             }
             json!({ "tag": "proxy", "protocol": "http", "settings": { "servers": [server] } })
         }
-        Profile::Wireguard(w) => return Some(build_wireguard_outbound(w)),
+        Profile::Wireguard(w) => return Some(build_wireguard_outbound(w, pin)),
         // `custom` carries only a raw config blob — nothing to build here.
         _ => return None,
     };
@@ -87,7 +110,10 @@ fn build_outbound_base(p: &Profile) -> Option<Map<String, Value>> {
     map.as_object().cloned()
 }
 
-fn build_wireguard_outbound(w: &crate::profile::Wireguard) -> Map<String, Value> {
+fn build_wireguard_outbound(
+    w: &crate::profile::Wireguard,
+    pin: Option<&DialPin>,
+) -> Map<String, Value> {
     let reserved: Vec<i64> = w.reserved.iter().map(|&b| b as i64).collect();
     let mut address = split_delimited(&w.local_address);
     if address.is_empty() {
@@ -106,7 +132,7 @@ fn build_wireguard_outbound(w: &crate::profile::Wireguard) -> Map<String, Value>
     }
     let mut peer = json!({
         "publicKey": w.peer_public_key,
-        "endpoint": format!("{}:{}", w.endpoint.address, w.endpoint.port),
+        "endpoint": format!("{}:{}", dial_address(&w.endpoint.address, pin), w.endpoint.port),
         "allowedIPs": ["0.0.0.0/0", "::/0"],
     });
     if !w.pre_shared_key.is_empty() {
@@ -392,8 +418,8 @@ fn is_stream(p: &Profile) -> bool {
 }
 
 /// Build the outbound `proxy` object for a profile (None if it can't run on xray).
-fn build_outbound(p: &Profile, s: &AdvancedSettings) -> Option<Value> {
-    let mut outbound = build_outbound_base(p)?;
+fn build_outbound(p: &Profile, s: &AdvancedSettings, pin: Option<&DialPin>) -> Option<Value> {
+    let mut outbound = build_outbound_base(p, pin)?;
 
     // TLS / Reality apply to stream protocols and http.
     if let Some(tls) = p.tls() {
@@ -555,6 +581,7 @@ fn build_profile_outbounds(
     s: &AdvancedSettings,
     routing_rules: &[RoutingRule],
     profiles: &[Profile],
+    pin: Option<&DialPin>,
 ) -> ProfileOutbounds {
     let mut resolved = std::collections::HashMap::new();
     let mut outbounds = Vec::new();
@@ -574,7 +601,7 @@ fn build_profile_outbounds(
                 continue;
             }
             match profiles.iter().find(|p| p.meta().id == id) {
-                Some(profile) => match build_outbound(profile, s) {
+                Some(profile) => match build_outbound(profile, s, pin) {
                     Some(mut ob) => {
                         if let Some(obj) = ob.as_object_mut() {
                             obj.insert("tag".into(), id.clone().into());
@@ -624,6 +651,7 @@ fn attach_chain(
     profiles: &[Profile],
     outbounds: &mut Vec<Value>,
     emitted: &mut HashSet<String>,
+    pin: Option<&DialPin>,
 ) -> Result<(), String> {
     let hops = chain_hops(p, profiles)?;
     let Some(first) = hops.first() else {
@@ -635,7 +663,7 @@ fn attach_chain(
         if !emitted.insert(tag.clone()) {
             continue;
         }
-        let mut hop_ob = build_outbound(hop, s).ok_or_else(|| {
+        let mut hop_ob = build_outbound(hop, s, pin).ok_or_else(|| {
             format!(
                 "proxy chain hop \"{}\" ({:?}) cannot be built for Xray",
                 hop.meta().remarks,
@@ -787,6 +815,19 @@ pub fn build_xray_config(
     routing_rules: &[RoutingRule],
     profiles: &[Profile],
 ) -> Result<Value, String> {
+    build_xray_config_pinned(p, s, routing_rules, profiles, None)
+}
+
+/// [`build_xray_config`] with the server hostname resolved to a literal address
+/// ([`DialPin`]): outbounds dial the IP while every name-carrying field (TLS
+/// `serverName`, transport `host`, ...) keeps the hostname.
+pub fn build_xray_config_pinned(
+    p: &Profile,
+    s: &AdvancedSettings,
+    routing_rules: &[RoutingRule],
+    profiles: &[Profile],
+    pin: Option<&DialPin>,
+) -> Result<Value, String> {
     if let Profile::Custom(c) = p {
         return match parse_json_safe(&c.raw) {
             Some(v @ Value::Object(_)) => Ok(v),
@@ -794,9 +835,9 @@ pub fn build_xray_config(
         };
     }
 
-    let outbound = build_outbound(p, s)
+    let outbound = build_outbound(p, s, pin)
         .ok_or_else(|| format!("no Xray outbound for protocol {:?}", p.protocol()))?;
-    let po = build_profile_outbounds(p, s, routing_rules, profiles);
+    let po = build_profile_outbounds(p, s, routing_rules, profiles, pin);
     let resolve = |tag: &str| -> String {
         if SPECIAL_OUTBOUND_TAGS.contains(&tag) {
             tag.to_string()
@@ -874,11 +915,11 @@ pub fn build_xray_config(
         .iter()
         .filter_map(|o| o["tag"].as_str().map(str::to_string))
         .collect();
-    attach_chain(p, &mut outbound, s, profiles, &mut hops, &mut emitted)?;
+    attach_chain(p, &mut outbound, s, profiles, &mut hops, &mut emitted, pin)?;
     for target in &mut targets {
         let id = target["tag"].as_str().unwrap_or_default().to_string();
         if let Some(tp) = profiles.iter().find(|x| x.meta().id == id) {
-            attach_chain(tp, target, s, profiles, &mut hops, &mut emitted)?;
+            attach_chain(tp, target, s, profiles, &mut hops, &mut emitted, pin)?;
         }
     }
 
@@ -1325,7 +1366,7 @@ mod tests {
 
     #[test]
     fn wireguard_address_splits_on_either_separator_and_is_never_empty() {
-        let out = build_wireguard_outbound(&wireguard("10.0.0.2/32\n fd00::2/128 "));
+        let out = build_wireguard_outbound(&wireguard("10.0.0.2/32\n fd00::2/128 "), None);
         assert_eq!(
             out["settings"]["address"],
             json!(["10.0.0.2/32", "fd00::2/128"])
@@ -1333,7 +1374,7 @@ mod tests {
         // A blank or separator-only value falls back to the default address:
         // xray rejects a wireguard outbound with an empty address list.
         for blank in ["", " , \n "] {
-            let out = build_wireguard_outbound(&wireguard(blank));
+            let out = build_wireguard_outbound(&wireguard(blank), None);
             assert_eq!(
                 out["settings"]["address"],
                 json!([WG_DEFAULT_LOCAL_ADDRESS])

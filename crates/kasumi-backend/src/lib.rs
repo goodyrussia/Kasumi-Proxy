@@ -15,6 +15,7 @@ pub mod lifecycle;
 pub mod net;
 pub mod platform;
 pub mod proc;
+pub mod server_resolve;
 pub mod service;
 pub mod state;
 pub mod state_mw;

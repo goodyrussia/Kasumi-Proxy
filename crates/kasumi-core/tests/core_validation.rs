@@ -23,7 +23,7 @@ use std::process::Command;
 use serde_json::{Value, json};
 use strum::IntoEnumIterator;
 
-use kasumi_core::core_config::build_core_config;
+use kasumi_core::core_config::{build_core_config, build_core_config_pinned};
 use kasumi_core::enums::{
     Fingerprint, Flow, HeaderType, Network, PacketEncoding, Security, SsMethod, VmessEnc,
 };
@@ -32,6 +32,7 @@ use kasumi_core::profile::{Profile, Protocol};
 use kasumi_core::state::{
     AdvancedSettings, DomainStrategy, LogLevel, MuxXudp443, RoutingMode, RoutingRule,
 };
+use kasumi_core::xray_config::DialPin;
 
 // ── valid credential / crypto material (cores validate these) ──
 const UUID: &str = "11111111-1111-1111-1111-111111111111";
@@ -778,4 +779,44 @@ fn chain_matrix_validates_against_real_cores() {
 #[test]
 fn settings_matrix_validates_against_real_cores() {
     validate_all(settings_cases());
+}
+
+/// The pinned config differs from the plain one only in the dial address being a
+/// literal (`DialPin`): the core must still accept it (and the name fields must
+/// keep the hostname — asserted before validation).
+#[test]
+fn a_pinned_address_config_validates_against_real_cores() {
+    let Some(bin) = find_core("KASUMI_XRAY_BIN", "xray") else {
+        eprintln!("no staged xray binary — skipping");
+        return;
+    };
+    let Some(mut profile) = make(Protocol::Vless, Some(Network::Ws), Security::Tls, "pinned")
+    else {
+        return;
+    };
+    if let Profile::Vless(v) = &mut profile {
+        v.endpoint.address = "vpn.example".to_string();
+    }
+    let pin = DialPin {
+        host: "vpn.example".to_string(),
+        ip: "203.0.113.7".to_string(),
+    };
+    let cfg = build_core_config_pinned(
+        &profile,
+        &AdvancedSettings::default(),
+        &[],
+        std::slice::from_ref(&profile),
+        Some(&pin),
+    )
+    .unwrap()
+    .config;
+    let outbound = &cfg["outbounds"][0];
+    assert_eq!(outbound["settings"]["vnext"][0]["address"], "203.0.113.7");
+    assert_eq!(
+        outbound["streamSettings"]["wsSettings"]["host"],
+        "cdn.example"
+    );
+    let (_keep, path) = write_config(&cfg);
+    let (ok, output) = validate(&bin, &path, binaries_dir().as_path());
+    assert!(ok, "Xray rejected the pinned config:\n{}", output.trim());
 }

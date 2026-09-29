@@ -1,7 +1,7 @@
 id=kasumi-proxy
 name=Kasumi Proxy
-version=v0.6.1
-versionCode=016
+version=v0.6.2
+versionCode=017
 updateJson=https://raw.githubusercontent.com/goodyrussia/Kasumi-Proxy/main/update.json
 author=goodyrussia
 description=A system-level transparent proxy routing engine using Xray-core (arm64 root module)
