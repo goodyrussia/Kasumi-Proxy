@@ -1,3 +1,9 @@
+## v0.6.1 — 2026-09-29
+
+### Changes
+
+- [`97b39a5`](https://github.com/goodyrussia/Kasumi-Proxy/commit/97b39a5) fix(routing): capture the NetworkStack probe uid; default TUN engine → hev
+
 ## v0.6.0 — 2026-09-28
 
 ### Changes
