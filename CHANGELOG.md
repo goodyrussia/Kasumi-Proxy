@@ -1,3 +1,9 @@
+## v0.6.2 — 2026-09-29
+
+### Changes
+
+- [`a21f220`](https://github.com/goodyrussia/Kasumi-Proxy/commit/a21f220) feat(backend): pin the server hostname to a resolved address at connect
+
 ## v0.6.1 — 2026-09-29
 
 ### Changes
