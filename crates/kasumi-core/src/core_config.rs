@@ -84,19 +84,19 @@ mod tests {
         let s = AdvancedSettings::default();
         let p = parse_share_link("vless://u@e.x:443?type=tcp&security=tls&sni=s", None).unwrap();
         let c = build_core_config(&p, &s, &[], std::slice::from_ref(&p)).unwrap();
-        assert_eq!(c.tun, TunEngine::Tun2socks);
+        assert_eq!(c.tun, TunEngine::Hev);
         assert!(c.config["outbounds"].is_array());
     }
 
     #[test]
     fn tun_engine_comes_from_settings() {
         let s = AdvancedSettings {
-            tun_engine: TunEngine::Hev,
+            tun_engine: TunEngine::Tun2socks,
             ..Default::default()
         };
         let p = parse_share_link("vless://u@e.x:443?type=tcp&security=tls&sni=s", None).unwrap();
         let c = build_core_config(&p, &s, &[], std::slice::from_ref(&p)).unwrap();
-        assert_eq!(c.tun, TunEngine::Hev);
+        assert_eq!(c.tun, TunEngine::Tun2socks);
     }
 
     #[test]
@@ -115,7 +115,7 @@ mod tests {
 
         // A TUN-engine switch is a restart trigger even with an identical config.
         let mut s3 = s.clone();
-        s3.tun_engine = TunEngine::Hev;
+        s3.tun_engine = TunEngine::Tun2socks;
         let d = build_core_config(&p, &s3, &[], std::slice::from_ref(&p)).unwrap();
         assert_eq!(d.config, a.config);
         assert!(active_config_changed(&a, &d));

@@ -226,7 +226,7 @@ mod tests {
 
         // No explicit id → uses active_id.
         let (opts, built) = resolve_and_write_config(&p, None).await.unwrap();
-        assert_eq!(opts.tun, TunEngine::Tun2socks);
+        assert_eq!(opts.tun, TunEngine::Hev);
         assert_eq!(opts.socks_port, 11080);
         // TestPlatform doesn't support proxy modes → always normalized to tun.
         assert_eq!(opts.mode, ProxyMode::Tun);

@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use kasumi_core::state::{AppCaptureMode, AppFilterMode};
 use kasumi_core::tun::{TUN_IPV4_CIDR, TUN_IPV6_CIDR, TUN2_IPV4_CIDR, TUN2_IPV6_CIDR};
 
-use super::paths::{IP, IP6TABLES, IPTABLES};
-use super::{default_uplink, silent};
+use super::paths::{CMD, IP, IP6TABLES, IPTABLES};
+use super::{default_uplink, run_out, silent};
 
 pub const FWMARK: u32 = 255;
 const RULE_PRIORITY: &str = "1000";
@@ -85,16 +85,86 @@ async fn mark_uid(ipt: &str, range: &str) {
 }
 
 /// Append the catch-all uid capture: strict marks every uid but root (1-max);
-/// otherwise capture "all" marks system (1000) + apps (9999+). Per-uid bypass /
-/// force-proxy rules and the local/REPLY exclusions are added before this, so they
-/// take precedence. capture "none" adds nothing.
-async fn capture_mark_rules(ipt: &str, filter: &AppFilter) {
+/// otherwise capture "all" marks system (1000) + apps (9999+) + the OS
+/// connectivity-check uid(s). Per-uid bypass / force-proxy rules and the
+/// local/REPLY exclusions are added before this, so they take precedence.
+/// capture "none" adds nothing.
+async fn capture_mark_rules(ipt: &str, filter: &AppFilter, netstack: &[u32]) {
     if filter.strict {
         mark_uid(ipt, "1-2147483647").await;
     } else if filter.capture_mode == AppCaptureMode::All {
         mark_uid(ipt, "1000").await;
         mark_uid(ipt, "9999-2147483647").await;
+        for uid in netstack {
+            mark_uid(ipt, &uid.to_string()).await;
+        }
     }
+}
+
+/// Uids to mark for the OS connectivity checks, or none when this capture
+/// configuration doesn't capture the system band anyway (strict captures every
+/// uid; "none" captures nothing by explicit choice).
+async fn connectivity_uids_if_captured(filter: &AppFilter) -> Vec<u32> {
+    if !filter.strict && filter.capture_mode == AppCaptureMode::All {
+        connectivity_uids().await
+    } else {
+        Vec::new()
+    }
+}
+
+/// AOSP's fixed uid of the NetworkStack app (`Process.NETWORK_STACK_UID`), used
+/// when the package-manager lookup yields nothing.
+const NETWORK_STACK_UID_FALLBACK: u32 = 1073;
+
+/// Uids of Android's connectivity-check process. NetworkMonitor — the captive
+/// portal / internet-validation probes (`generate_204` and friends) — runs in
+/// the NetworkStack app, whose uid sits inside the system band that read-only
+/// capture otherwise leaves direct. Left uncaptured it bypasses the tunnel, so
+/// on links where only tunnelled traffic works (zero-rated SIMs, captive
+/// intermediaries) every probe fails and the OS marks the network
+/// unvalidated/"no internet" — surfacing as Chromium's sticky offline bar even
+/// though real traffic flows. The app and its tethering twin share one uid;
+/// overlays are separate packages and skipped.
+async fn connectivity_uids() -> Vec<u32> {
+    let (code, out) = run_out(&[CMD, "package", "list", "packages", "-U", "networkstack"]).await;
+    if code == 0 {
+        let uids = parse_networkstack_uids(&out);
+        if !uids.is_empty() {
+            return uids;
+        }
+    }
+    vec![NETWORK_STACK_UID_FALLBACK]
+}
+
+/// Parse `cmd package list packages -U networkstack` output (`package:<name>
+/// uid:<n>` per line).
+fn parse_networkstack_uids(out: &str) -> Vec<u32> {
+    let mut uids = Vec::new();
+    for line in out.lines() {
+        let Some(rest) = line.trim().strip_prefix("package:") else {
+            continue;
+        };
+        let mut parts = rest.split_whitespace();
+        let (Some(pkg), Some(uid)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let Some(uid) = uid.strip_prefix("uid:").and_then(|v| v.parse::<u32>().ok()) else {
+            continue;
+        };
+        if !matches!(
+            pkg,
+            "com.android.networkstack"
+                | "com.google.android.networkstack"
+                | "com.android.networkstack.tethering"
+                | "com.google.android.networkstack.tethering"
+        ) {
+            continue;
+        }
+        if !uids.contains(&uid) {
+            uids.push(uid);
+        }
+    }
+    uids
 }
 
 /// Legacy cleanup: remove any strict-route carve-out rule an older build
@@ -413,6 +483,7 @@ pub async fn apply_external_tun_routing(st: &RoutingState) {
         return;
     };
     let tun2 = st.tun2_iface.as_deref();
+    let netstack = connectivity_uids_if_captured(&st.filter).await;
 
     silent(&[IP, "addr", "add", TUN_IPV4_CIDR, "dev", tun]).await;
     silent(&[IP, "link", "set", "dev", tun, "up"]).await;
@@ -503,7 +574,7 @@ pub async fn apply_external_tun_routing(st: &RoutingState) {
     .await;
     local_ipv4_exclusions().await;
     app_uid_rules(IPTABLES, &st.filter).await;
-    capture_mark_rules(IPTABLES, &st.filter).await;
+    capture_mark_rules(IPTABLES, &st.filter, &netstack).await;
     silent(&[IPTABLES, "-t", "mangle", "-A", "OUTPUT", "-j", MARK_CHAIN]).await;
     silent(&[IPTABLES, "-I", "FORWARD", "-o", tun, "-j", "ACCEPT"]).await;
     silent(&[IPTABLES, "-I", "FORWARD", "-i", tun, "-j", "ACCEPT"]).await;
@@ -660,7 +731,7 @@ pub async fn apply_external_tun_routing(st: &RoutingState) {
     .await;
     local_ipv6_exclusions().await;
     app_uid_rules(IP6TABLES, &st.filter).await;
-    capture_mark_rules(IP6TABLES, &st.filter).await;
+    capture_mark_rules(IP6TABLES, &st.filter, &netstack).await;
     silent(&[IP6TABLES, "-t", "mangle", "-A", "OUTPUT", "-j", MARK_CHAIN]).await;
     silent(&[
         IP6TABLES,
@@ -676,10 +747,11 @@ pub async fn apply_external_tun_routing(st: &RoutingState) {
 
 /// Reload xray app-filter rules without a core restart (reload-app-filter).
 pub async fn reload_app_filter_rules(filter: &AppFilter) {
+    let netstack = connectivity_uids_if_captured(filter).await;
     for ipt in [IPTABLES, IP6TABLES] {
         silent(&[ipt, "-t", "mangle", "-F", MARK_CHAIN]).await;
         app_uid_rules(ipt, filter).await;
-        capture_mark_rules(ipt, filter).await;
+        capture_mark_rules(ipt, filter, &netstack).await;
     }
 }
 
@@ -693,6 +765,27 @@ mod tests {
         assert_eq!(uid_of("10123"), Some("10123"));
         assert_eq!(uid_of("com.app:abc"), None);
         assert_eq!(uid_of("com.app:"), None);
+    }
+
+    #[test]
+    fn parses_networkstack_uids_skipping_overlays() {
+        // Real shape, as listed by `cmd package list packages -U networkstack`:
+        // the probe app and its tethering twin share one uid; overlays carry
+        // their own and are skipped.
+        let out = "\
+package:com.android.networkstack.tethering.overlay.ncm uid:10202
+package:com.android.networkstack.overlay uid:10182
+package:com.android.networkstack uid:1073
+package:com.android.networkstack.tethering uid:1073
+";
+        assert_eq!(parse_networkstack_uids(out), vec![1073]);
+        assert_eq!(
+            parse_networkstack_uids("package:com.google.android.networkstack uid:1073\n"),
+            vec![1073]
+        );
+        assert!(parse_networkstack_uids("").is_empty());
+        assert!(parse_networkstack_uids("package:com.example uid:10123\n").is_empty());
+        assert!(parse_networkstack_uids("garbage").is_empty());
     }
 
     #[test]

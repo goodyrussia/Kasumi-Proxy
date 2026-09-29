@@ -352,7 +352,7 @@ impl Default for AdvancedSettings {
             asset_auto_update: false,
             asset_update_interval: DEFAULT_ASSET_UPDATE_INTERVAL,
             asset_update_mode: FetchMode::default(),
-            tun_engine: TunEngine::Tun2socks,
+            tun_engine: TunEngine::Hev,
             tun_mtu: 9000,
             // hev upstream defaults (mirror its built-in values, so an unedited
             // config behaves exactly like stock hev).
@@ -468,8 +468,8 @@ mod tests {
         assert_eq!(v["fragmentPackets"], "tlshello");
         assert_eq!(v["logRotateMaxKb"], 512);
         assert_eq!(v["appCaptureMode"], "all");
-        // TUN engine: single setting, defaulted to tun2socks; MTU present.
-        assert_eq!(v["tunEngine"], "tun2socks");
+        // TUN engine: single setting, defaulted to hev; MTU present.
+        assert_eq!(v["tunEngine"], "hev");
         assert_eq!(v["tunMtu"], 9000);
         // Optional fields omitted, not null.
         assert!(v.get("localSocksPort").is_none());

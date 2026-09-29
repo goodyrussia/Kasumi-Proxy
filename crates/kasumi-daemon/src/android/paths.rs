@@ -37,6 +37,7 @@ pub const TUN2SOCKS2_CONFIG: &str = "/data/adb/kasumi-proxy/run/tun2socks2.yml";
 pub const IP: &str = "/system/bin/ip";
 pub const IPTABLES: &str = "/system/bin/iptables";
 pub const IP6TABLES: &str = "/system/bin/ip6tables";
+pub const CMD: &str = "/system/bin/cmd";
 
 /// The backend's on-disk locations for the Android module.
 pub fn backend_paths() -> BackendPaths {

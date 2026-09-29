@@ -317,7 +317,7 @@ export const DEFAULT_ADVANCED_SETTINGS = {
   "speedConcurrency": 1,
   "strictRoute": false,
   "tunConnectTimeoutMs": 10000,
-  "tunEngine": "tun2socks",
+  "tunEngine": "hev",
   "tunMtu": 9000,
   "tunTcpBufferSize": 65536,
   "tunTcpRwTimeoutMs": 300000,
